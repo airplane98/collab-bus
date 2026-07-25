@@ -1,0 +1,10 @@
+{
+  "name": "collab-bus",
+  "displayName": "Collab Bus",
+  "description": "Collaborate with a peer AI CLI (e.g. Codex) running in a shared tmux pane via a filesystem message bus: send review/task requests, poll for replies, and iterate to sign-off.",
+  "version": "0.1.0",
+  "author": { "name": "airplane98" },
+  "repository": "https://github.com/airplane98/collab-bus",
+  "license": "MIT",
+  "keywords": ["collaboration", "codex", "review", "tmux", "multi-agent"]
+}

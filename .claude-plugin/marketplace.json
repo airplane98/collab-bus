@@ -1,0 +1,17 @@
+{
+  "name": "collab-bus",
+  "owner": {
+    "name": "airplane98",
+    "url": "https://github.com/airplane98"
+  },
+  "plugins": [
+    {
+      "name": "collab-bus",
+      "source": "./plugins/collab-bus",
+      "description": "Peer collaboration between Claude Code and a second AI CLI (Codex, etc.) over a tmux + filesystem message bus — send review/task requests, poll for replies, iterate to sign-off.",
+      "version": "0.1.0",
+      "author": { "name": "airplane98" },
+      "keywords": ["collaboration", "codex", "review", "tmux", "multi-agent"]
+    }
+  ]
+}
