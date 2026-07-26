@@ -1,12 +1,27 @@
 # collab-bus
 
 A Claude Code plugin for **peer collaboration between two AI CLIs** — Claude Code
-(orchestrator) and a second CLI like **Codex** (reviewer / second opinion) — running
-in a shared tmux session on one repo. They exchange markdown messages over a
-filesystem bus (`collab/inbox/`) and knock each other via tmux `send-keys`.
+(orchestrator) and a second CLI like **Codex** (reviewer / second opinion) — sharing
+one repo. Message *content* + audit trail live in a filesystem bus (`collab/inbox/`);
+*transport and turn-completion* run over **[herdr](https://herdr.dev)**, an
+agent-aware terminal workspace manager.
 
 Use it when you want a genuinely independent agent to **review, debate, and sign off**
 on your work in a multi-round loop, with a durable audit trail — not a one-shot verdict.
+
+## Why herdr
+
+herdr is agent-aware: it knows each agent's semantic state (`idle`/`working`/`blocked`/
+`done`). collab-bus rides that instead of raw tmux, so:
+
+- **Submit + wait is atomic** — `herdr agent prompt <peer> "..." --wait` returns exactly
+  when the peer's turn settles. Nothing to poll.
+- **Clean submission** — no bracketed-paste "Enter got swallowed" problem.
+- **Inspectable** — `herdr agent get/read <pane_id>` shows the peer's state/output; no
+  need to eyeball a terminal.
+
+> collab-bus **v0.1** used raw tmux `send-keys` + file polling (still in git history).
+> **v0.2+ requires herdr.**
 
 ## Install (any machine)
 
@@ -16,36 +31,34 @@ on your work in a multi-round loop, with a durable audit trail — not a one-sho
 /reload-plugins
 ```
 
-Requires `tmux` (`brew install tmux`) and a second AI CLI (e.g. `codex`).
+Requires **[herdr](https://herdr.dev)** (`curl`/Homebrew/Nix) and a second AI CLI (e.g. `codex`).
 
 ## Use
 
 ```
-/collab-bus:init [peer]      # scaffold collab/ in this project; prints tmux launch + onboarding
-/collab-bus:send <peer> ...  # compose + send one message, then poll for the reply
-/collab-bus:status [peer]    # show inbox state and the peer's pane
+/collab-bus:init [peer]      # scaffold collab/, wire the peer as a herdr agent, handshake
+/collab-bus:send <peer> ...  # compose + send one message, wait for the peer, read the reply
+/collab-bus:status [peer]    # inbox state + the peer's live herdr agent_status
 ```
 
 Or just ask Claude in plain language ("get Codex's second opinion on this diff") — the
-bundled `collab` skill drives the send → knock → poll → archive loop.
+bundled `collab` skill drives the write → knock → read → archive loop.
 
 ### Wiring the peer
 
-1. `/collab-bus:init codex` in your project.
-2. Start the shared tmux session and run the peer inside it (init prints the exact command):
-   ```
-   tmux -S /tmp/collab-bus.sock new-session -s <project> -n codex
-   #   then in that pane:  cd <project> && codex
-   ```
-3. Tell Claude "peer is up." Claude knocks and drives the rounds.
+1. In a herdr workspace, open a pane/tab and run the peer CLI in your project
+   (`cd <project> && codex`). herdr auto-detects ~20 agent kinds.
+2. `/collab-bus:init codex` — scaffolds `collab/`, finds the peer's herdr `pane_id`,
+   writes the protocol, and runs the onboarding handshake.
+3. From then on, each round is one knock: `herdr agent prompt <peer> --wait` submits and
+   blocks until the peer finishes.
 
 ## How it works
 
-- **Transport**: tmux `send-keys` injects a one-line nudge into the peer's prompt.
+- **Transport + completion**: `herdr agent prompt <pane_id> "<nudge>" --wait` (via
+  `scripts/knock.sh`) — the blessed herdr CLI pattern; prefer `prompt` over `send-keys`.
 - **Bus**: `collab/inbox/to/{claude,<peer>}` + `archive/`; one markdown message per file.
 - **Protocol**: `collab/PROTOCOL.md` (written by `init`) is the per-project contract.
-- **Fixed socket** `/tmp/collab-bus.sock`: a backgrounded agent's `$TMPDIR` differs from
-  the terminal's, so a fixed absolute socket guarantees both sides reach the same server.
 
 ## When to use this vs a review plugin
 
@@ -60,7 +73,7 @@ plugins/collab-bus/
 ├── .claude-plugin/plugin.json
 ├── skills/collab/SKILL.md          # the orchestration workflow
 ├── commands/{init,send,status}.md  # /collab-bus:* commands
-├── scripts/notify.sh               # tmux knock
+├── scripts/knock.sh                # herdr transport: agent prompt --wait
 └── templates/PROTOCOL.template.md  # per-project protocol, filled by init
 ```
 

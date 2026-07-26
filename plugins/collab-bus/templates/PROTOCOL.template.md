@@ -1,7 +1,9 @@
 # {{PROJECT}} ⇄ {{PEER}} 協作協定 (collab-bus PROTOCOL)
 
-兩個 AI CLI（Claude Code + {{PEER}}）共享這個 repo，用**檔案系統當訊息匯流排**、
-**tmux `send-keys` 當敲門通知**。這份檔是雙方唯一的共同約定，衝突時以此為準。
+兩個 AI CLI（Claude Code + {{PEER}}）共享這個 repo。**訊息內容 + 審計軌跡**走檔案
+（`collab/inbox/`）；**傳輸與「對方跑完沒」**走 **herdr**（Claude 用 `agent prompt
+--wait` 提交並等對方那一輪結束，靠語義狀態,不輪詢、不 send-keys）。
+這份檔是雙方唯一的共同約定，衝突時以此為準。
 
 ## 角色分工
 
@@ -45,8 +47,9 @@ status: open            # open | done
 ## 收發流程（一輪）
 
 1. **寫**：發訊方在 `inbox/to/<對方>/` 建 `NNNN-*.md`，`status: open`。
-2. **敲門**：發訊方跑 `notify.sh <對方> "<一句話>"`（plugin 提供，用 tmux 注入對方 prompt）。
-3. **讀 + 做**：收訊方讀最新 `open` 訊息、執行。
+2. **敲門（送+等，原子）**：發訊方跑 plugin 的 `knock.sh <對方> "<一句話>"`
+   → herdr `agent prompt --wait` 提交 nudge 並阻塞到對方那一輪 settle，回傳 `agent_status`。
+3. **讀 + 做**：對方 settle 後（idle/done）讀最新 `open` 訊息、執行；`blocked` 就喊人類。
 4. **回覆**：收訊方在 `inbox/to/<發訊方>/` 建新 `NNNN-*.md`（`reply_to` 指回原 id），
    把**原訊息**搬到 `inbox/archive/`，換手敲門回去。
 
@@ -57,11 +60,12 @@ status: open            # open | done
 - **不碰預設分支**：實作走 branch，人類決定何時 merge。
 - 一則訊息只講一件事；大任務拆多則。
 - 訊息處理完一定要搬 `archive/`，`inbox/to/*` 只留 `open` 的，避免重複執行。
-- 專案自己的 `CLAUDE.md` / AGENTS.md 等規範仍然適用，且優先於本協定的一般性建議。
+- 專案自己的 `CLAUDE.md` / `AGENTS.md` 等規範仍然適用，且優先於本協定的一般性建議。
 
-## tmux 座標
+## herdr 座標
 
-- socket：`{{SOCKET}}`（固定路徑，背景 agent 才連得到）
-- session：`{{SESSION}}`
-- {{PEER}} pane：`{{SESSION}}:{{PEER}}`
-- Claude 敲門：`notify.sh {{PEER}} "..."`；{{PEER}} 敲門回：`notify.sh claude "..."`
+- peer agent target：`{{TARGET}}`（herdr pane_id，如 `w1:p2`；`agent list` 可查）
+- Claude 敲門：`knock.sh {{PEER}} "..."`（herdr `agent prompt --wait`）
+- {{PEER}} 敲門回 Claude：對 Claude 的 pane 下 `herdr agent prompt <claude-pane> "..." --wait`
+  （或人類轉述）；查對方狀態：`herdr agent get <pane_id>` / 讀輸出：`herdr agent read <pane_id>`
+- **一律用 `prompt` 不用 `send-keys`**（send-keys 繞過狀態追蹤）。

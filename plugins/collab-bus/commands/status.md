@@ -1,18 +1,16 @@
 ---
-description: Show the collab-bus inbox state and the peer's tmux pane
+description: Show the collab-bus inbox state and the peer agent's herdr state/output
 ---
 
 Report the current collab-bus state. Peer from `$1` (default `codex`).
 
 1. **Inbox**: list `collab/inbox/to/claude/`, `collab/inbox/to/<peer>/`, and
    `collab/inbox/archive/`. Flag any `open` messages waiting on either side.
-2. **Peer pane**: with `SOCK=${COLLAB_TMUX_SOCK:-/tmp/collab-bus.sock}` and
-   `SESSION` = git-toplevel basename (`.`/`:`→`_`), show it's alive and what it's doing:
-   ```
-   tmux -S "$SOCK" list-panes -a -F '#{session_name}:#{window_name} [#{pane_current_command}]'
-   tmux -S "$SOCK" capture-pane -p -t "$SESSION:<peer>" | tail -8
-   ```
-   If those tmux commands are blocked by a permission/safety classifier while plain
-   `ls` works, say so and ask the human to eyeball the peer window directly.
-3. Summarize in one compact table: pending messages (each side), last archived
-   exchange, and whether the peer pane is running / idle / stuck with unsent input.
+2. **Peer agent (herdr)**: it's agent-aware, so read state directly — no pane-scraping guess:
+   - `herdr agent list` — confirm the peer is detected; note its `pane_id` and `agent_status`.
+   - `herdr agent get <pane_id>` — full state (idle/working/blocked/done/unknown).
+   - `herdr agent read <pane_id> --lines 12` — recent terminal output, if you need context.
+   If `herdr status` shows the server isn't running, or the peer isn't listed, say so and
+   point to `/collab-bus:init`.
+3. Summarize in one compact table: pending messages (each side), last archived exchange,
+   and the peer's live `agent_status` (working / idle / blocked / done).

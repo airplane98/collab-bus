@@ -1,44 +1,47 @@
 ---
-description: Scaffold collab/ + PROTOCOL in the current project and print the tmux launch + peer onboarding steps
+description: Scaffold collab/ + PROTOCOL in the current project and wire the peer as a herdr agent
 ---
 
 Set up the collab-bus in **this** project so Claude Code and a peer AI CLI can
-collaborate. Peer name from `$1` (default `codex`).
+collaborate over herdr. Peer name from `$1` (default `codex`).
 
-Do the following:
+1. **Check herdr.** `herdr status` must show `server: status: running`. If herdr is
+   missing, tell the user to install it (https://herdr.dev) — collab-bus ≥0.2 needs it.
 
-1. **Resolve names.**
+2. **Resolve names.**
    - `PEER` = `$1` or `codex`.
-   - `SOCKET` = `${COLLAB_TMUX_SOCK:-/tmp/collab-bus.sock}`.
-   - `SESSION` = basename of the git toplevel (`git rev-parse --show-toplevel`),
-     falling back to the project dir name, with `.`/`:` replaced by `_`.
+   - `PROJECT` = basename of the git toplevel (`git rev-parse --show-toplevel`), else cwd.
 
-2. **Scaffold** (idempotent — don't clobber existing message files):
+3. **Scaffold** (idempotent — don't clobber existing message files):
    ```
    collab/inbox/to/<PEER>/   collab/inbox/to/claude/   collab/inbox/archive/
    collab/reviews/           collab/tasks/
    ```
    Add a `.gitkeep` in each so the structure survives a clone.
 
-3. **Write `collab/PROTOCOL.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/PROTOCOL.template.md`,
-   substituting `{{PROJECT}}`=SESSION, `{{PEER}}`, `{{SOCKET}}`, `{{SESSION}}`.
+4. **Wire the peer as a herdr agent** and capture its `pane_id` (the `TARGET`):
+   - Run `herdr agent list`. If the peer already shows up (detected kind matches PEER),
+     use its `pane_id`.
+   - Otherwise instruct the human: open a new herdr pane/tab (split the workspace) and
+     run the peer CLI there in this project dir, e.g. `cd <project> && codex`. herdr
+     auto-detects ~20 agent kinds (Codex, Claude Code, Copilot CLI, …). Then re-run
+     `herdr agent list` and take the new `pane_id`.
+   - Optional but recommended for a stable target: `herdr agent rename <pane_id> <PEER>`.
 
-4. **Write the onboarding message** `collab/inbox/to/<PEER>/0001-onboarding.md`
+5. **Write `collab/PROTOCOL.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/PROTOCOL.template.md`,
+   substituting `{{PROJECT}}`, `{{PEER}}`, and `{{TARGET}}` (the resolved pane_id).
+
+6. **Write the onboarding message** `collab/inbox/to/<PEER>/0001-onboarding.md`
    (frontmatter per PROTOCOL, `type: task`, `status: open`) instructing the peer to:
    read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; confirm its role
    as reviewer; then reply with `0002-onboarding-ack.md` to `collab/inbox/to/claude/`
    (its stack summary + whether it can run git/tests) and archive `0001`.
 
-5. **Print the human handoff** — do NOT run these for the user; show them:
-   ```
-   # 1) start the shared tmux session and run the peer CLI inside it:
-   tmux -S <SOCKET> new-session -s <SESSION> -n <PEER>
-   #    then, in that pane:  cd <project> && <peer launch command, e.g. `codex`>
+7. **Kick off the handshake** (only if the peer agent is already detected): knock it —
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <PEER> "Handshake: process 0001-onboarding"` —
+   which submits and waits for the peer's turn, then read `0002` and archive per PROTOCOL.
+   If the peer isn't wired yet, tell the human the one step (run the peer in a herdr pane)
+   and stop.
 
-   # 2) tell Claude "peer is up" — Claude will knock and drive the onboarding round.
-   ```
-
-6. **Explain**: the peer must run **inside that tmux pane on that socket** or Claude
-   can't reach it; Claude knocks via `${CLAUDE_PLUGIN_ROOT}/scripts/notify.sh`.
-
-Keep output tight: confirm what was scaffolded, then the two-step human handoff.
+Keep output tight: confirm what was scaffolded and the peer's herdr target, then the
+next action (either "peer wired, handshake done" or "run the peer in a herdr pane").

@@ -8,10 +8,10 @@
     {
       "name": "collab-bus",
       "source": "./plugins/collab-bus",
-      "description": "Peer collaboration between Claude Code and a second AI CLI (Codex, etc.) over a tmux + filesystem message bus — send review/task requests, poll for replies, iterate to sign-off.",
-      "version": "0.1.0",
+      "description": "Peer collaboration between Claude Code and a second AI CLI (Codex, etc.) over herdr + a filesystem message bus — submit-and-wait on agent state, iterate to sign-off. Requires herdr.",
+      "version": "0.2.0",
       "author": { "name": "airplane98" },
-      "keywords": ["collaboration", "codex", "review", "tmux", "multi-agent"]
+      "keywords": ["collaboration", "codex", "review", "herdr", "multi-agent"]
     }
   ]
 }
