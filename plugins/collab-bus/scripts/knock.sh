@@ -36,8 +36,11 @@ command -v herdr >/dev/null 2>&1 || {
 }
 
 # Resolve <peer> to a pane_id (herdr's canonical target). Best-effort: needs
-# python3; falls back to passing <peer> through so an explicit pane_id/name still
-# works without python. `|| true` keeps `set -e`-style aborts away from the pipe.
+# python3; otherwise (or on any failure) <peer> is passed straight to herdr, so an
+# explicit pane_id/name still works. Only an UNAMBIGUOUS match resolves — zero or
+# multiple matches defer to herdr rather than silently guessing a target. The
+# trailing `|| true` swallows a nonzero pipeline exit so `resolved` is cleanly empty
+# (the script uses `set -uo pipefail`, not `-e`, so this only affects this capture).
 target="$peer"
 if command -v python3 >/dev/null 2>&1; then
   resolved="$(herdr agent list 2>/dev/null | python3 -c '
@@ -50,9 +53,8 @@ except Exception:
 def match(a):
     return peer in (a.get("pane_id"), a.get("name"), a.get("agent"), a.get("display_agent"))
 hits = [a for a in agents if match(a)]
-if not hits and len(agents) == 1:
-    hits = agents
-print(hits[0]["pane_id"] if hits else "")
+# Resolve only a unique match; 0 or >1 -> empty -> caller passes <peer> to herdr.
+print(hits[0]["pane_id"] if len(hits) == 1 else "")
 ' "$peer" 2>/dev/null || true)"
   [[ -n "$resolved" ]] && target="$resolved"
 fi

@@ -2,9 +2,17 @@
   "name": "collab-bus",
   "displayName": "Collab Bus",
   "description": "Collaborate with a peer AI CLI (e.g. Codex) running as a herdr-managed agent: send review/task requests, submit-and-wait via herdr agent state, and iterate to sign-off over a filesystem message bus.",
-  "version": "0.2.0",
-  "author": { "name": "airplane98" },
+  "version": "0.2.1",
+  "author": {
+    "name": "airplane98"
+  },
   "repository": "https://github.com/airplane98/collab-bus",
   "license": "MIT",
-  "keywords": ["collaboration", "codex", "review", "herdr", "multi-agent"]
+  "keywords": [
+    "collaboration",
+    "codex",
+    "review",
+    "herdr",
+    "multi-agent"
+  ]
 }

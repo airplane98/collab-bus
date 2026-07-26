@@ -9,9 +9,17 @@
       "name": "collab-bus",
       "source": "./plugins/collab-bus",
       "description": "Peer collaboration between Claude Code and a second AI CLI (Codex, etc.) over herdr + a filesystem message bus — submit-and-wait on agent state, iterate to sign-off. Requires herdr.",
-      "version": "0.2.0",
-      "author": { "name": "airplane98" },
-      "keywords": ["collaboration", "codex", "review", "herdr", "multi-agent"]
+      "version": "0.2.1",
+      "author": {
+        "name": "airplane98"
+      },
+      "keywords": [
+        "collaboration",
+        "codex",
+        "review",
+        "herdr",
+        "multi-agent"
+      ]
     }
   ]
 }
