@@ -20,7 +20,8 @@
 # Prints: the path of the created (empty) message file.
 #
 # Env: COLLAB_ROOT (default: ./collab), COLLAB_LOCK_WAIT_SEC (default 60),
-#      COLLAB_LOCK_STALE_SEC (default 120)
+#      COLLAB_LOCK_WAIT_SEC (default 60). There is no automatic stale recovery:
+#      a stuck lock reports who holds it and stops. See describe_lock().
 set -euo pipefail
 
 COLLAB_ROOT="${COLLAB_ROOT:-collab}"
@@ -29,16 +30,17 @@ SLUG="${2:?usage: next-id.sh <to> <slug> <tab>}"
 TAB="${3:?usage: next-id.sh <to> <slug> <tab>  (tab is required, e.g. w3:t3)}"
 
 # --- validate inputs: these become path components ---------------------------
-for v in "$TO" "$SLUG"; do
-  case "$v" in
-    */*|*..*|"") echo "error: '$v' must not be empty or contain '/' or '..'" >&2; exit 2 ;;
-  esac
-done
-case "$TAB" in
-  w*:t*) : ;;
-  *) echo "error: tab '$TAB' must look like wN:tN" >&2; exit 2 ;;
-esac
-
+# Allowlist, not a blocklist. The previous version excluded "/" and ".." but a
+# glob like w*:t* still accepted "w1:t1/escape", which reached mkdir -p.
+if ! [[ "$TO" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: to '$TO' must match [A-Za-z0-9._-]+" >&2; exit 2
+fi
+if ! [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: slug '$SLUG' must match [A-Za-z0-9._-]+" >&2; exit 2
+fi
+if ! [[ "$TAB" =~ ^w[0-9]+:t[0-9]+$ ]]; then
+  echo "error: tab '$TAB' must match ^w[0-9]+:t[0-9]+\$ (e.g. w3:t3)" >&2; exit 2
+fi
 # Absolute, so two agents in different sub-directories lock the same place.
 [ -d "$COLLAB_ROOT/inbox" ] || { echo "error: $COLLAB_ROOT/inbox not found — run /collab-bus:init first" >&2; exit 1; }
 COLLAB_ROOT="$(cd "$COLLAB_ROOT" && pwd -P)"
@@ -46,7 +48,6 @@ COLLAB_ROOT="$(cd "$COLLAB_ROOT" && pwd -P)"
 LOCK="$COLLAB_ROOT/.idlock"
 OWNER_FILE="$LOCK/owner"
 WAIT_SEC="${COLLAB_LOCK_WAIT_SEC:-60}"
-STALE_SEC="${COLLAB_LOCK_STALE_SEC:-120}"
 # Identifies THIS process. Checked before releasing, so we can never remove a
 # lock somebody else now holds.
 TOKEN="$(hostname -s 2>/dev/null || echo host):$$:${RANDOM}${RANDOM}"
@@ -66,33 +67,43 @@ release() {
 }
 trap release EXIT
 
-try_break_stale() {
-  # Never rmdir the well-known path directly: another process may acquire it
-  # between our check and our remove. Rename it aside (atomic) and inspect the
-  # quarantined copy instead.
-  local owner host pid age
+# Automatic stale takeover was REMOVED in v0.3.2.
+#
+# Portable shell has no compare-and-rename on a well-known path, so any
+# read-check-then-rename sequence has a generation race: the owner we inspected
+# can be replaced between the check and the rename, and we would then move (and
+# delete) a lock its new owner still holds. There is also a window between
+# `mkdir` and writing the owner token where a reaper would see an ownerless lock
+# and break a lock that is legitimately being acquired.
+#
+# Rather than paper over those with more shell, a stuck lock now fails loudly and
+# a human decides. If automatic recovery is ever needed, it must come from a
+# primitive the OS releases on process death (flock/fcntl) or from a ticket
+# scheme that never reuses one pathname — not from this script.
+describe_lock() {
+  local owner age
   owner="$(cat "$OWNER_FILE" 2>/dev/null || true)"
-  host="${owner%%:*}"; pid="$(printf '%s' "$owner" | cut -d: -f2)"
-  # A malformed owner file must NOT read as "dead": kill -0 on a non-numeric
-  # string fails, which would let us break a lock its owner still holds.
-  case "$pid" in (*[!0-9]*|"") pid="" ;; esac
-  if [ -n "$owner" ] && [ -z "$pid" ]; then
-    # Owner present but unparseable — refuse to judge liveness; only the age
-    # rule below may break it, and only well past the stale threshold.
-    age=$(( $(date +%s) - $(mtime "$LOCK") ))
-    [ "$age" -gt $(( STALE_SEC * 2 )) ] || return 1
-  elif [ -n "$pid" ] && [ "$host" = "$(hostname -s 2>/dev/null || echo host)" ] \
-       && kill -0 "$pid" 2>/dev/null; then
-    # Same host, pid alive => genuinely held. Never break it, at any age.
-    return 1
-  fi
   age=$(( $(date +%s) - $(mtime "$LOCK") ))
-  [ "$age" -gt "$STALE_SEC" ] || return 1
-  local quar="$LOCK.stale.$TOKEN"
-  mv "$LOCK" "$quar" 2>/dev/null || return 1
-  rm -rf "$quar"
-  echo "warn: broke stale lock (age ${age}s, owner '${owner:-unknown}')" >&2
-  return 0
+  echo "  lock:  $LOCK" >&2
+  echo "  owner: ${owner:-<none recorded>}" >&2
+  echo "  age:   ${age}s" >&2
+  case "$owner" in
+    *:*:*)
+      local host pid
+      host="${owner%%:*}"; pid="$(printf '%s' "$owner" | cut -d: -f2)"
+      if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$host" = "$(hostname -s 2>/dev/null || echo host)" ]; then
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "  pid $pid is ALIVE on this host — the lock is genuinely held; wait." >&2
+        else
+          echo "  pid $pid is not running on this host — the holder probably crashed." >&2
+          echo "  If you are sure no allocator is running:  rm -rf '$LOCK'" >&2
+        fi
+      else
+        echo "  owner is on another host or unparseable — do not guess; check the other machine." >&2
+      fi
+      ;;
+    *) echo "  If you are sure no allocator is running:  rm -rf '$LOCK'" >&2 ;;
+  esac
 }
 
 deadline=$(( $(date +%s) + WAIT_SEC ))
@@ -102,9 +113,9 @@ while :; do
     owned=1
     break
   fi
-  try_break_stale || true
   [ "$(date +%s)" -lt "$deadline" ] || {
-    echo "error: timed out after ${WAIT_SEC}s waiting for $LOCK" >&2
+    echo "error: timed out after ${WAIT_SEC}s waiting for the id lock." >&2
+    describe_lock
     exit 1
   }
   sleep 0.3

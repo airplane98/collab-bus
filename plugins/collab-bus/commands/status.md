@@ -10,7 +10,11 @@ Report the current collab-bus state. Peer from `$1` (default `codex`).
    not your queue, and reporting them as pending is how an agent ends up processing
    another pair's work. Mention the count of other-pair messages in one line, and
    support an explicit `--all` when the human really wants everything.
-2. **Peer agent (herdr)**: it's agent-aware, so read state directly — no pane-scraping guess:
+2. **Peer agent (herdr)**: resolve *your* peer, not just "a peer of that kind":
+   match your own session id against `agent_session.value` to find your `tab_id`,
+   then require **exactly one** agent of the peer kind in that tab; if there are
+   zero or several, say so and stop rather than reporting somebody else's agent.
+   `--all` widens which *messages* are listed — it never widens peer targeting.
    - `herdr agent list` — confirm the peer is detected; note its `pane_id` and `agent_status`.
    - `herdr agent get <pane_id>` — full state (idle/working/blocked/done/unknown).
    - `herdr agent read <pane_id> --lines 12` — recent terminal output, if you need context.

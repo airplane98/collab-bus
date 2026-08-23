@@ -23,8 +23,11 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
    do **not** bake it into PROTOCOL.md. With more than one pair in the workspace a
    stored pane_id points at somebody else's agent; the template therefore tells
    agents to resolve by `tab_id` every round.
-   - Run `herdr agent list`. If the peer already shows up (detected kind matches PEER),
-     use its `pane_id`.
+   - **Identify yourself first**, then take only a peer in your own tab: match your
+     own session id against `agent_session.value` in `herdr agent list` (never
+     `focused`), note your `tab_id`, and accept a peer of the right kind **only if
+     exactly one shares that tab**. With several pairs open, "the detected kind"
+     is not enough — it can be somebody else's agent.
    - Otherwise instruct the human: open a new herdr pane/tab (split the workspace) and
      run the peer CLI there in this project dir, e.g. `cd <project> && codex`. herdr
      auto-detects ~20 agent kinds (Codex, Claude Code, Copilot CLI, …). Then re-run
@@ -38,9 +41,11 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
    `mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" collab/bin/`
    and record the plugin version it came from in PROTOCOL.md.
 
-6. **Write the onboarding message** via the allocator (not a hardcoded `0001`):
+6. **Write the onboarding message** via the allocator (never a hardcoded `0001`):
    `DEST=$(collab/bin/next-id.sh <PEER> onboarding <your-tab-id>)`, with
-   `pair: <your tab_id>` in the frontmatter
+   `pair: <your tab_id>` in the frontmatter. The inbox may not be empty, so do not
+   assume any particular number — and do not tell the peer to reply with a specific
+   id either; ask it to allocate its own and reply with `reply_to: <your id>`
    (frontmatter per PROTOCOL, `type: task`, `status: open`) instructing the peer to:
    read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; confirm its role
    as reviewer; then reply with `0002-onboarding-ack.md` to `collab/inbox/to/claude/`

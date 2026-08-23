@@ -40,9 +40,17 @@ collab/
 > # 然後把內容寫進 $DEST
 > ```
 >
-> 它用 `mkdir` 當互斥鎖（POSIX 原子操作），在鎖內算號並以 exclusive create 佔位再放鎖。
-> 鎖內記錄 owner token（host:pid:rand），**只有持鎖者本人能釋放**；
-> 逾時等待者絕不碰別人的鎖。檔名帶 tab 只增加可追溯性，不是第二把鎖。
+> 它用 `mkdir` 當互斥鎖（POSIX 原子操作），在鎖內算號並以 **exclusive create** 佔位再放鎖。
+> 鎖內記錄 owner token（`host:pid:rand`），**只有持鎖者本人能釋放**；逾時等待者絕不碰別人的鎖。
+>
+> **v0.3.2 起沒有自動 stale 接管**：鎖卡住會明確報錯並列出持有者（含該 PID 是否還活著），
+> 由人判斷後手動清除。原因是 portable shell 對固定路徑做不到 compare-and-rename，
+> 任何「檢查後再 rename」都有換代競態，可能移走別人正持有的鎖；
+> `mkdir` 成功到寫入 token 之間也有一段無主視窗。要自動恢復必須改用 process 死亡即釋放的
+> OS 鎖（flock/fcntl），或不重用同一路徑的 ticket 設計。
+>
+> **防覆寫的責任分工**：同機競態由 exclusive create（`noclobber`）擋；
+> 檔名帶 tab **只增加可追溯性**，不是第二把鎖。
 >
 > ⚠️ **保證範圍：同一台機器、同一個本地目錄 view 的並行 process。**
 > `mkdir` 的原子性只存在於單一 filesystem namespace。放在 Dropbox／iCloud／Drive 這類
