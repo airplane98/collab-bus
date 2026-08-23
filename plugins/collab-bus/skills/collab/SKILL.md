@@ -13,7 +13,13 @@ and herdr reports, via semantic agent state, exactly when the peer's turn settle
 No tmux, no send-keys, no polling.
 
 The authoritative per-project contract is **`collab/PROTOCOL.md`** (written by
-`/collab-bus:init`). Read it if present; it wins over general guidance here.
+`/collab-bus:init`). Read it if present; it wins over general guidance here —
+**with one carve-out**: the multi-pair safety rules below (atomic id allocation,
+`pair` routing, resolve-the-peer-every-round) **supersede any PROTOCOL.md that
+predates them**. A file generated before v0.3.0 still says "next id = highest + 1"
+and pins a static `peer agent target: <pane_id>`; both are known to break once a
+second Claude+peer pair opens in the same repo, so do not follow them. Tell the
+human their PROTOCOL.md is stale and offer to patch those two sections.
 
 ## Prerequisites (verify before a round)
 
