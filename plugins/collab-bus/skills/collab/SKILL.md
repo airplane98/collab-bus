@@ -26,11 +26,19 @@ The authoritative per-project contract is **`collab/PROTOCOL.md`** (written by
 
 ## Running one round (write → knock → read → archive)
 
-1. **Write the message.** Next id = highest `NNNN` in `collab/inbox/**` + 1. Create
-   `collab/inbox/to/<peer>/NNNN-<slug>.md` with PROTOCOL frontmatter (`from: claude`,
-   `to: <peer>`, precise `type`, `status: open`). One concern per message. For a
-   review, point at the diff (`git diff`, branch, files) and give your framing /
-   design intent — a cold diff yields a shallow review.
+1. **Write the message.** Allocate the id atomically — never compute
+   "highest + 1" yourself, that races with a concurrent pair and produces two
+   messages with the same number:
+
+   ```bash
+   DEST=$("${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" <peer> <slug> <my-tab-id>)
+   ```
+
+   It returns the path of an empty placeholder file it already reserved; write the
+   content into that path. Fill PROTOCOL frontmatter (`pair: <my tab_id>`,
+   `from: claude`, `to: <peer>`, precise `type`, `status: open`). One concern per
+   message. For a review, point at the diff (`git diff`, branch, files) and give
+   your framing / design intent — a cold diff yields a shallow review.
 
 2. **Knock (submit + wait, atomic).** Run:
    `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer> "<one-line nudge>"`
@@ -72,10 +80,41 @@ herdr is *agent-aware*, which removes every failure mode of raw tmux send-keys:
   the peer's state/output directly — no need to ask the human to eyeball a pane.
 - Use the `herdr <subcommand>` CLI wrappers (not raw socket) for all of this.
 
+## Multiple pairs in one repo
+
+Two independent failure modes appear as soon as a second Claude+peer pair opens in
+the same workspace:
+
+- **Id collisions.** Always use `scripts/next-id.sh` (mkdir-based mutex, reserves
+  the file inside the lock, and stamps the tab id into the filename as a fallback).
+- **No real addressee.** `inbox/to/<peer>/` says *which kind*, not *which one*, and
+  both peers read the same directory. Stamp `pair: <tab_id>` in the frontmatter,
+  process only messages whose `pair` matches your own tab, and leave the rest
+  untouched (they belong to the other pair). Name the file in the knock nudge
+  rather than saying "check the inbox".
+
+## Resolving the peer (do this every round)
+
+Never hardcode a pane_id, and never trust one written into an older PROTOCOL.md —
+a second pair makes it point at somebody else's agent. Resolve fresh:
+
+1. **Find yourself** by matching `agent_session.value` against your own session id
+   (for Claude Code that is the last path segment of your scratchpad directory).
+   Do *not* use `focused==true`: it fails whenever terminal focus is elsewhere.
+2. **Find the peer** as the agent of the peer kind sharing your `tab_id`.
+3. **Print "ME → PEER" before knocking** so the human can catch a misroute.
+4. If no peer shares your tab, or more than one does, **stop and ask** rather than
+   falling back to a static pane_id.
+
+Knocking the wrong pair interrupts whatever that pair was doing. If it happens,
+stop the round, do not retry, and tell the human which pane you hit.
+
 ## Gotchas
 
 - **Target is a pane_id** (`w1:p2`). `knock.sh` resolves a name/kind to a pane_id via
-  `herdr agent list`; if that fails it passes your argument straight to herdr.
+  `herdr agent list`, but only when the match is unambiguous — with two agents of the
+  same kind it refuses. That refusal is the signal to resolve by tab (above), not a
+  reason to dig an old pane_id out of PROTOCOL.md.
 - **The knock blocks** for up to `COLLAB_WAIT_MS` (default 10 min). That's intended for
   a review round; don't wrap it inside a latency-sensitive user action.
 - **herdr pins the pane during the wait** — don't swap the peer agent mid-round.
