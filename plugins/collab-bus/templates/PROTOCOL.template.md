@@ -40,8 +40,16 @@ collab/
 > # 然後把內容寫進 $DEST
 > ```
 >
-> 它用 `mkdir` 當互斥鎖（POSIX 原子操作），在鎖內算號並立刻建空檔佔位再放鎖。
-> 檔名帶 tab 是第二層保險：即使鎖失效也不會互相覆蓋，且看得出是誰寫的。
+> 它用 `mkdir` 當互斥鎖（POSIX 原子操作），在鎖內算號並以 exclusive create 佔位再放鎖。
+> 鎖內記錄 owner token（host:pid:rand），**只有持鎖者本人能釋放**；
+> 逾時等待者絕不碰別人的鎖。檔名帶 tab 只增加可追溯性，不是第二把鎖。
+>
+> ⚠️ **保證範圍：同一台機器、同一個本地目錄 view 的並行 process。**
+> `mkdir` 的原子性只存在於單一 filesystem namespace。放在 Dropbox／iCloud／Drive 這類
+> **同步資料夾時，兩台機器各自都能在自己的本地 view 建立 `.idlock`、讀到相同 MAX、
+> 配出相同編號**——同步層之後只會產生 conflicted copy，不會幫你解決競爭。
+> 需要跨機器單調編號請改用中央 allocator；不需要單調序號則改用 UUID/ULID。
+> 編號到 `9999` 會明確失敗，不會靜默重用。
 
 ```markdown
 ---
@@ -85,6 +93,10 @@ status: open            # open | done
 **問題二：收件匣是共用的，訊息沒有真正的收件人。**
 `inbox/to/{{PEER}}/` 只說「給 {{PEER}}」，沒說給**哪一個**。兩組的 peer 都會讀到同一個目錄。
 
+> ⚠️ **`pair` 是「防誤處理」，不是存取控制。** 共用工作區裡任何 agent 都能讀寫所有 inbox，
+> 所以它擋不住惡意或有 bug 的一方，只能避免兩組互相誤觸。要真正隔離需要改成
+> `inbox/pairs/<pair-id>/to/<agent>/` 的目錄結構。
+
 → 每則訊息的 frontmatter 必須帶 `pair`（發訊方的 `tab_id`）；
    收訊方**只處理 `pair` 等於自己 tab_id 的訊息**，其餘不動也不歸檔（那是別組的）。
    敲門的 nudge 要明講檔名，不要只說「看收件匣」。
@@ -101,17 +113,29 @@ status: open            # open | done
 ```bash
 # 1. 我是誰：agent_session.value == 自己的 session id
 #    （Claude Code 的 session id = scratchpad 路徑的最後一層目錄名）
-herdr agent list --json | jq -r --arg me "<my-session-id>" '.result.agents[]
+herdr agent list | jq -r --arg me "<my-session-id>" '.result.agents[]
   | select(.agent=="claude" and .agent_session.value==$me)
   | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
 
 # 2. 我的 peer：tab_id 與上面相同、agent 為對方的那一筆
-herdr agent list --json | jq -r --arg tab "<上一步的 tab>" '.result.agents[]
+herdr agent list | jq -r --arg tab "<上一步的 tab>" '.result.agents[]
   | select(.agent=="{{PEER}}" and .tab_id==$tab)
   | "PEER pane=\(.pane_id) status=\(.agent_status)"'
 ```
 
 > 不要用 `focused==true` 找自己——終端焦點在別處時會直接失效。
+
+**{{PEER}}（Codex 等）那一側怎麼識別自己**：herdr 會把 caller context 放進環境變數，
+優先用它，不要猜 pane、不要用 focus：
+
+```bash
+test "${HERDR_ENV:-}" = 1 || exit 1
+herdr agent get "$HERDR_PANE_ID"      # 驗證 pane_id / tab_id / agent 相符
+```
+
+沒有 herdr caller 變數時的 fallback：用 CLI 自己的 session id
+（Codex 是 `CODEX_SESSION_ID`，實測等於 herdr 的 `agent_session.value`）
+在 `herdr agent list` 找**恰好一筆**相符的紀錄；0 筆或多筆就停下來問人。
 
 **敲門前一定要把「我是誰 → 要敲誰」印出來讓人類可核對。**
 同 tab 找不到對方時**停下來問人**，不要退回去用任何寫死的 pane_id。

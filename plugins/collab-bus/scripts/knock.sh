@@ -27,7 +27,10 @@
 set -uo pipefail
 
 peer="${1:-}"
-nudge="${2:-Read the newest open message addressed to you under collab/inbox/ and act per collab/PROTOCOL.md; write your reply file and archive the message when your turn is done.}"
+# The default deliberately does NOT say "read the newest open message": with more
+# than one Claude+peer pair sharing collab/inbox/, the newest open item may belong
+# to the other pair. Callers should pass an explicit file path.
+nudge="${2:-Act on the message addressed to you under collab/inbox/ whose \`pair\` matches your own herdr tab_id — ignore messages belonging to other pairs. Follow collab/PROTOCOL.md; write your reply file and archive the message when your turn is done. (The caller did not name a file; ask which one if it is ambiguous.)}"
 
 [[ -z "$peer" ]] && { echo "usage: knock.sh <peer|pane_id> [nudge]" >&2; exit 2; }
 command -v herdr >/dev/null 2>&1 || {

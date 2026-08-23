@@ -5,7 +5,11 @@ description: Show the collab-bus inbox state and the peer agent's herdr state/ou
 Report the current collab-bus state. Peer from `$1` (default `codex`).
 
 1. **Inbox**: list `collab/inbox/to/claude/`, `collab/inbox/to/<peer>/`, and
-   `collab/inbox/archive/`. Flag any `open` messages waiting on either side.
+   `collab/inbox/archive/`. **Show only messages whose `pair` matches your own
+   `tab_id` by default** — in a workspace with two pairs the others' open items are
+   not your queue, and reporting them as pending is how an agent ends up processing
+   another pair's work. Mention the count of other-pair messages in one line, and
+   support an explicit `--all` when the human really wants everything.
 2. **Peer agent (herdr)**: it's agent-aware, so read state directly — no pane-scraping guess:
    - `herdr agent list` — confirm the peer is detected; note its `pane_id` and `agent_status`.
    - `herdr agent get <pane_id>` — full state (idle/working/blocked/done/unknown).

@@ -91,9 +91,17 @@ herdr is *agent-aware*, which removes every failure mode of raw tmux send-keys:
 Two independent failure modes appear as soon as a second Claude+peer pair opens in
 the same workspace:
 
-- **Id collisions.** Always use `scripts/next-id.sh` (mkdir-based mutex, reserves
-  the file inside the lock, and stamps the tab id into the filename as a fallback).
-- **No real addressee.** `inbox/to/<peer>/` says *which kind*, not *which one*, and
+- **Id collisions.** Always use `scripts/next-id.sh`. It is an owner-aware
+  mkdir mutex: the lock records a `host:pid:rand` token, only the holder releases
+  it, a waiter that times out never touches it, and the destination is created
+  with `noclobber` so nothing is truncated. **Its guarantee is single-host only** —
+  `mkdir` is atomic within one filesystem namespace, so in a synced folder
+  (Dropbox/iCloud/Drive) two machines can each take the lock in their own local
+  view and allocate the same id. For cross-machine ids use a central allocator or
+  switch to UUID/ULID. Ids past 9999 fail loudly rather than silently repeating.
+- **No real addressee.** `pair` prevents *accidents*, not access — every agent in a
+  shared workspace can read and write every inbox, so it is not a security
+  boundary. `inbox/to/<peer>/` says *which kind*, not *which one*, and
   both peers read the same directory. Stamp `pair: <tab_id>` in the frontmatter,
   process only messages whose `pair` matches your own tab, and leave the rest
   untouched (they belong to the other pair). Name the file in the knock nudge
@@ -108,6 +116,10 @@ a second pair makes it point at somebody else's agent. Resolve fresh:
    (for Claude Code that is the last path segment of your scratchpad directory).
    Do *not* use `focused==true`: it fails whenever terminal focus is elsewhere.
 2. **Find the peer** as the agent of the peer kind sharing your `tab_id`.
+   (A peer CLI identifies *itself* from herdr's caller env instead: check
+   `HERDR_ENV=1`, then `herdr agent get "$HERDR_PANE_ID"`; fall back to matching
+   its own session id — e.g. `CODEX_SESSION_ID` — against exactly one
+   `herdr agent list` record.)
 3. **Print "ME → PEER" before knocking** so the human can catch a misroute.
 4. If no peer shares your tab, or more than one does, **stop and ask** rather than
    falling back to a static pane_id.
