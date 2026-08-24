@@ -50,6 +50,14 @@ collab/
 > `mkdir` 成功到寫入 token 之間也有一段無主視窗。要自動恢復必須改用 process 死亡即釋放的
 > OS 鎖（flock/fcntl），或不重用同一路徑的 ticket 設計。
 >
+> **v0.3.7：釋放失敗時鎖必須保持「有主」。** owner 檔在鎖目錄「裡面」，所以得先刪它、
+> `rmdir` 才會成功；但只要 `rmdir` 失敗一次（同步守護程序的暫存檔、`.DS_Store`、慢速掛載），
+> 鎖就會以**無主**狀態殘留——而既然沒有自動接管，無主鎖等於**沒有人工介入就無法恢復**，
+> 且會擋掉之後所有配號。實際發生過（2026-08-24，卡住一輪複查）。
+> 現在 `release()` 會重試 `rmdir`；仍失敗就**把 owner token 寫回去**，
+> 讓 `describe_lock()` 至少報得出持有者。回歸測試見 `tests/test_next_id_release.sh`
+> （以 `COLLAB_NEXT_ID_LIB=1` source 真正的 `release()`，不是另寫一份等價邏輯）。
+>
 > **防覆寫的責任分工**：同機競態由 exclusive create（`noclobber`）擋；
 > 檔名帶 tab **只增加可追溯性**，不是第二把鎖。
 >

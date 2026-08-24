@@ -24,7 +24,12 @@
 #      and stops. See describe_lock().
 set -euo pipefail
 
+# Sourcing this file with COLLAB_NEXT_ID_LIB=1 defines the functions WITHOUT
+# allocating anything, so a test can drive release() against a real directory.
+# Without this, a release() test could only re-implement the logic it claims to
+# check — the exact weaker-proxy failure this repo keeps hitting.
 COLLAB_ROOT="${COLLAB_ROOT:-collab}"
+if [ "${COLLAB_NEXT_ID_LIB:-}" != 1 ]; then
 TO="${1:?usage: next-id.sh <to> <slug> <tab>}"
 SLUG="${2:?usage: next-id.sh <to> <slug> <tab>}"
 TAB="${3:?usage: next-id.sh <to> <slug> <tab>  (tab is required, e.g. w3:t3)}"
@@ -47,15 +52,16 @@ fi
 # Absolute, so two agents in different sub-directories lock the same place.
 [ -d "$COLLAB_ROOT/inbox" ] || { echo "error: $COLLAB_ROOT/inbox not found — run /collab-bus:init first" >&2; exit 1; }
 COLLAB_ROOT="$(cd "$COLLAB_ROOT" && pwd -P)"
+fi
 
-LOCK="$COLLAB_ROOT/.idlock"
+LOCK="${LOCK:-$COLLAB_ROOT/.idlock}"
 OWNER_FILE="$LOCK/owner"
 WAIT_SEC="${COLLAB_LOCK_WAIT_SEC:-60}"
 [[ "$WAIT_SEC" =~ ^[0-9]+$ ]] || { echo "error: COLLAB_LOCK_WAIT_SEC must be a non-negative integer" >&2; exit 2; }
 # Identifies THIS process. Checked before releasing, so we can never remove a
 # lock somebody else now holds.
-TOKEN="$(hostname -s 2>/dev/null || echo host):$$:${RANDOM}${RANDOM}"
-owned=0
+TOKEN="${TOKEN:-$(hostname -s 2>/dev/null || echo host):$$:${RANDOM}${RANDOM}}"
+owned=${owned:-0}
 
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 
@@ -66,8 +72,25 @@ release() {
   # locks held by other processes.
   [ "$owned" -eq 1 ] || return 0
   [ "$(cat "$OWNER_FILE" 2>/dev/null || true)" = "$TOKEN" ] || return 0
+
+  # The owner file lives INSIDE the lock dir, so it has to go first for rmdir to
+  # succeed. That ordering has a failure mode we hit for real: if rmdir then
+  # fails even once — a sync daemon holding a temp file, .DS_Store, a slow
+  # network mount — the lock survives with NO owner recorded. Since automatic
+  # stale takeover was deliberately removed (see below), an ownerless lock is
+  # unrecoverable without a human, and it blocks every future allocation. So:
+  # retry briefly, and if the directory still will not go, put the token BACK so
+  # the lock stays attributable and describe_lock() can name its holder.
   rm -f "$OWNER_FILE" 2>/dev/null || true
-  rmdir "$LOCK" 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5; do
+    rmdir "$LOCK" 2>/dev/null && return 0
+    [ -d "$LOCK" ] || return 0
+    sleep 0.2
+  done
+  printf '%s\n' "$TOKEN" > "$OWNER_FILE" 2>/dev/null || true
+  echo "warning: could not remove $LOCK after releasing it; owner token restored" >&2
+  echo "  so the lock stays attributable. Investigate what is holding the directory." >&2
 }
 trap release EXIT
 
@@ -118,6 +141,11 @@ describe_lock() {
       echo "  file appears in the meantime, which is the safe outcome)" >&2 ;;
   esac
 }
+
+if [ "${COLLAB_NEXT_ID_LIB:-}" = 1 ]; then
+  trap - EXIT          # a sourced library must not release on the caller's exit
+  return 0 2>/dev/null || exit 0
+fi
 
 deadline=$(( $(date +%s) + WAIT_SEC ))
 while :; do
