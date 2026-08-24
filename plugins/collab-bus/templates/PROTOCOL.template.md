@@ -1,8 +1,9 @@
 # {{PROJECT}} ⇄ {{PEER}} 協作協定 (collab-bus PROTOCOL)
 
 兩個 AI CLI（Claude Code + {{PEER}}）共享這個 repo。**訊息內容 + 審計軌跡**走檔案
-（`collab/inbox/`）；**傳輸與「對方跑完沒」**走 **herdr**（Claude 用 `agent prompt
---wait` 提交並等對方那一輪結束，靠語義狀態,不輪詢、不 send-keys）。
+（`collab/inbox/`）；**傳輸與「對方跑完沒」**走 **herdr**——**雙方敲門都用
+`collab/bin/knock.sh`**（先 `agent wait` 把對方進行中的一輪等完，再 `agent prompt
+--wait` 提交並等 settle；靠語義狀態，不輪詢、不 send-keys）。
 這份檔是雙方唯一的共同約定，衝突時以此為準。
 
 ## 角色分工
@@ -86,12 +87,25 @@ status: open            # open | done
 ## 收發流程（一輪）
 
 1. **寫**：發訊方在 `inbox/to/<對方>/` 建 `NNNN-*.md`，`status: open`。
-2. **敲門（送+等，原子）**：先依「herdr 座標」那節**動態解析出對方的 pane_id**，
-   再跑 `knock.sh <peer_pane_id> "<一句話，並指名檔案路徑>"`
-   → herdr `agent prompt --wait` 提交 nudge 並阻塞到對方那一輪 settle，回傳 `agent_status`。
+2. **敲門（先等，再送+等）**：先依「herdr 座標」那節**動態解析出對方的 pane_id**，
+   再跑 `collab/bin/knock.sh <對方_pane_id> "<一句話，並指名檔案路徑>"`（雙方共用
+   這一個入口，方向相反也一樣）。
+   knock 會先用 `herdr agent wait` **把對方進行中的那一輪等完**再提交——
+   herdr 明文說 `prompt --wait` 不追蹤 turn：對方還在 `working` 時直接提交，
+   等到的可能是**上一輪**的結束，你會去讀一個還不存在的回覆檔。
+   之後才是 `agent prompt --wait` 提交 nudge 並阻塞到對方那一輪 settle，回傳 `agent_status`。
 3. **讀 + 做**：對方 settle 後（idle/done）**只讀 nudge 指名的那個檔**；
    若未指名，只處理 `pair` 等於自己 tab_id 的 `open` 訊息，其餘不動也不歸檔。
-   `blocked` 就喊人類。
+   settle 了卻**找不到回覆檔**：等到的不是你那一輪（例如別組在 pre-settle 與提交
+   之間也敲了它），你的 nudge 還排在隊裡。此時裸跑一次 `agent wait` 沒有用——
+   對方已經 settle，它會立刻 match 同一個 idle。要等**下一輪**：
+   `herdr agent wait <peer_pane_id> --until working --timeout 15000`（排隊的 nudge
+   開跑時會轉 working），接著 `herdr agent wait <peer_pane_id>` 等它 settle，再查
+   收件匣——**working 那段等到 timeout 也一樣要再查一次**：那一輪可能在你開始等
+   之前就跑完了，timeout 不等於 nudge 被吞。查完**仍然**沒有回覆檔才喊人類，
+   **不要**直接重敲（會重複下指令）。
+   `blocked`（或提交前就被拒的 `agent_blocked`）就喊人類；
+   `herdr agent read <peer_pane_id>` 可看它卡在哪個確認畫面。
 4. **回覆**：收訊方在 `inbox/to/<發訊方>/` 建新 `NNNN-*.md`（`reply_to` 指回原 id），
    把**原訊息**搬到 `inbox/archive/`，換手敲門回去。
 
@@ -131,11 +145,9 @@ status: open            # open | done
 **規則：peer = 與自己同一個 `tab_id` 的對方 agent**（不是 pane 編號、也不是名稱）。
 
 ```bash
-# 1. 我是誰：agent_session.value == 自己的 session id
-#    （Claude Code 的 session id = scratchpad 路徑的最後一層目錄名）
-herdr agent list | jq -r --arg me "<my-session-id>" '.result.agents[]
-  | select(.agent=="claude" and .agent_session.value==$me)
-  | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
+# 1. 我是誰（herdr >= 0.8，雙方通用）：pane current 即時解析「呼叫者自己的 pane」，
+#    一個指令拿到自己的 pane_id / tab_id / agent_session
+herdr pane current | jq -r '.result.pane | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
 
 # 2. 我的 peer：tab_id 與上面相同、agent 為對方的那一筆
 herdr agent list | jq -r --arg tab "<上一步的 tab>" '.result.agents[]
@@ -143,28 +155,35 @@ herdr agent list | jq -r --arg tab "<上一步的 tab>" '.result.agents[]
   | "PEER pane=\(.pane_id) status=\(.agent_status)"'
 ```
 
-> 不要用 `focused==true` 找自己——終端焦點在別處時會直接失效。
+> `tab_id` 以 `pane current` 的**即時**結果為準，不要用 `HERDR_TAB_ID` 環境變數——
+> 那是 process 啟動時的快照，pane 被搬到別的 tab 後就過期了。
+> 也不要用 `focused==true` 找自己——終端焦點在別處時會直接失效。
 
-**{{PEER}}（Codex 等）那一側怎麼識別自己**：herdr 會把 caller context 放進環境變數，
-優先用它，不要猜 pane、不要用 focus：
+**`pane current` 失敗時的 fallback**（例如不在 herdr pane 裡執行）：
+用自己的 session id 對 `agent_session.value` 在 `herdr agent list` 找**恰好一筆**：
 
 ```bash
-test "${HERDR_ENV:-}" = 1 || exit 1
-herdr agent get "$HERDR_PANE_ID"      # 驗證 pane_id / tab_id / agent 相符
+# Claude Code 的 session id = scratchpad 路徑的最後一層目錄名；
+# Codex 是 CODEX_SESSION_ID（實測等於 herdr 的 agent_session.value）
+herdr agent list | jq -r --arg me "<my-session-id>" '.result.agents[]
+  | select(.agent_session.value==$me)
+  | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
 ```
 
-沒有 herdr caller 變數時的 fallback：用 CLI 自己的 session id
-（Codex 是 `CODEX_SESSION_ID`，實測等於 herdr 的 `agent_session.value`）
-在 `herdr agent list` 找**恰好一筆**相符的紀錄；0 筆或多筆就停下來問人。
+0 筆或多筆就停下來問人。（另一個次級 fallback：`HERDR_ENV=1` 時
+`herdr agent get "$HERDR_PANE_ID"` 也能驗自己，但同樣是啟動時快照。）
 
 **敲門前一定要把「我是誰 → 要敲誰」印出來讓人類可核對。**
 同 tab 找不到對方時**停下來問人**，不要退回去用任何寫死的 pane_id。
 
-- Claude 敲門：`knock.sh <peer_pane_id> "..."`（用解析出的 pane_id；
-  `knock.sh {{PEER}}` 這種名稱解析在有兩個以上同類 agent 時會拒絕，那是警訊不是故障）
-- {{PEER}} 敲門回 Claude：`herdr agent prompt <claude_pane_id> "..." --wait`（同樣同 tab 解析）
+- **雙方敲門都用 `collab/bin/knock.sh <對方_pane_id> "..."`**（用解析出的 pane_id；
+  `knock.sh {{PEER}}` 這種名稱解析在有兩個以上同類 agent 時會拒絕，那是警訊不是故障）。
+  它先 pre-settle 再提交；**敲門時不要自己裸跑 `herdr agent prompt ... --wait`**——
+  對方還在 working 時那個 wait 可能吃到**上一輪**的結束（herdr 明載 prompt 不追蹤
+  turn），等於重新引入 knock.sh 專門擋掉的競態。這對 {{PEER}} 敲回 Claude 的方向
+  一樣成立。
 - 查狀態：`herdr agent get <pane_id>`／讀輸出：`herdr agent read <pane_id>`
-- **一律用 `prompt` 不用 `send-keys`**（send-keys 繞過狀態追蹤）。
+- **一律走 `prompt`（經 knock.sh）不用 `send-keys`**（send-keys 繞過狀態追蹤）。
 
 **誤敲別組時**：立刻停止該輪、不要重試，並告知人類敲到了哪個 pane——
 對方那組可能正在跑別的任務。

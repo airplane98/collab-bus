@@ -2,12 +2,15 @@
 # collab-bus knock — herdr transport.
 #
 # Submits a nudge to the peer agent AND blocks until its turn settles, using
-# herdr's semantic agent states. This is the blessed `agent prompt --wait`
-# pattern (atomic submit+wait, no race) via the herdr CLI wrapper — NOT raw
-# socket writes and NOT `send-keys` (which bypasses state tracking).
+# herdr's semantic agent states: a guarded two-step (`agent wait` pre-settle,
+# then `agent prompt --wait`) via the herdr CLI wrapper — NOT raw socket
+# writes and NOT `send-keys` (which bypasses state tracking). The two steps
+# leave a small window between them (another pair can knock the same peer in
+# it); the docs' missing-reply recovery covers that residue — this script
+# closes the big race, it does not make the exchange atomic.
 #
 # Replaces the old tmux `notify.sh` (send-keys + manual Enter + file polling):
-# herdr tells us exactly when the peer finished, so there is nothing to poll.
+# herdr reports when the peer's turn settles, so there is nothing to poll.
 #
 # Usage: knock.sh <peer> [nudge]
 #   <peer>  herdr agent: a pane_id (e.g. w1:p2), a unique agent name, or the
@@ -15,14 +18,25 @@
 #           `agent list` (needs python3); otherwise passed straight to herdr.
 #   [nudge] one-line instruction submitted to the peer's prompt.
 #
-# Env:
-#   COLLAB_WAIT_MS   settle timeout in ms (default 600000 = 10 min)
+# Needs herdr >= 0.8 (`agent wait`). Before prompting, the script settles any
+# in-flight peer turn with `agent wait`: herdr documents that `prompt --wait`
+# does NOT track turns — submitted while the peer is still `working`, the wait
+# can match the OLD turn's completion and the caller goes looking for a reply
+# that was never written. herdr also rejects a prompt outright (agent_blocked)
+# when the peer is already blocked, so a blocked pre-wait stops here instead.
 #
-# Output: herdr's JSON result on stdout (the settled AgentStatus). Inspect it:
+# Env:
+#   COLLAB_WAIT_MS   settle timeout in ms (default 600000 = 10 min).
+#                    Worst case the script blocks ~2x this: once settling the
+#                    in-flight turn, once waiting for our own.
+#
+# Output: herdr's JSON result on stdout (the settled AgentStatus); herdr's own
+# errors stay on stderr with their exit code. Inspect the result:
 #   idle/done → the peer finished; its reply file should be ready to read.
 #   blocked   → the peer is waiting on a permission/approval UI; surface to human.
-# Nonzero exit: bad usage (2), herdr missing (1); an unresolved target or a
-# stalled/timeout prompt surfaces herdr's own error JSON with its exit code.
+# Nonzero exit: herdr missing (1), bad usage (2), peer already blocked before
+# the prompt (3), unparseable pre-wait result (4); an unresolved target or a
+# stalled/timeout prompt surfaces herdr's error JSON with herdr's exit code.
 
 set -uo pipefail
 
@@ -62,7 +76,52 @@ print(hits[0]["pane_id"] if len(hits) == 1 else "")
   [[ -n "$resolved" ]] && target="$resolved"
 fi
 
-echo "knock → $peer (target=$target): submit + wait for turn to settle (idle/done/blocked, timeout ${COLLAB_WAIT_MS:-600000}ms)" >&2
+wait_ms="${COLLAB_WAIT_MS:-600000}"
+
+# Pre-settle the peer. Without --until, `agent wait` matches idle/done/blocked:
+# an idle peer returns immediately, a working one blocks until ITS current turn
+# ends — which is exactly the turn `prompt --wait` would otherwise mis-match.
+# stderr is NOT captured, so a failure (timeout, agent_not_found, or an unknown
+# subcommand on herdr < 0.8) leaves herdr's error JSON on stderr — same stream
+# as the prompt step's errors — and stops: prompting an unsettled peer would
+# reintroduce the race this guard exists to close.
+echo "knock → $peer (target=$target): pre-settle any in-flight turn (timeout ${wait_ms}ms)" >&2
+pre="$(herdr agent wait "$target" --timeout "$wait_ms")"; rc=$?
+if [ "$rc" -ne 0 ]; then
+  exit "$rc"
+fi
+
+# Blocked gate. Parse agent_status when python3 is available — a substring match
+# would fail OPEN the day herdr pretty-prints or wraps this output. Unparseable
+# success output fails CLOSED (exit 4) rather than prompting blind. Without
+# python3, the substring match on herdr 0.8's compact JSON is the fallback.
+if command -v python3 >/dev/null 2>&1; then
+  status="$(printf '%s' "$pre" | python3 -c '
+import json, sys
+try:
+    a = (json.load(sys.stdin).get("result") or {}).get("agent") or {}
+    s = a.get("agent_status")
+except Exception:
+    sys.exit(1)
+if not s:
+    sys.exit(1)
+print(s)
+')" || {
+    echo "knock: could not parse the pre-settle result below — not prompting blind." >&2
+    printf '%s\n' "$pre" >&2
+    exit 4
+  }
+else
+  status=""
+  case "$pre" in *'"agent_status":"blocked"'*) status="blocked";; esac
+fi
+if [ "$status" = "blocked" ]; then
+  echo "peer is blocked on an approval/permission UI — herdr would reject the prompt (agent_blocked). Surface to the human; \`herdr agent read $target\` shows what it is stuck on." >&2
+  printf '%s\n' "$pre"
+  exit 3
+fi
+
+echo "knock → $peer (target=$target): submit + wait for turn to settle (idle/done/blocked, timeout ${wait_ms}ms)" >&2
 # No --until: `prompt --wait` defaults to idle/done/blocked = "turn settled".
 # The JSON result reports which state settled; the caller decides what to do next.
-exec herdr agent prompt "$target" "$nudge" --wait --timeout "${COLLAB_WAIT_MS:-600000}"
+exec herdr agent prompt "$target" "$nudge" --wait --timeout "$wait_ms"

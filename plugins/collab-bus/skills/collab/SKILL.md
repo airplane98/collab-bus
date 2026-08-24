@@ -9,21 +9,40 @@ Two AI CLIs share one repo. **Claude Code is the orchestrator** (plans, implemen
 opens branches); a **peer CLI** (default: Codex) is the reviewer / second opinion.
 Message *content* + audit trail live in `collab/inbox/` (markdown files); *transport
 and turn-completion* run over **herdr** — Claude submits a prompt to the peer agent
-and herdr reports, via semantic agent state, exactly when the peer's turn settles.
+and herdr reports, via semantic agent state, when the peer's turn settles.
 No tmux, no send-keys, no polling.
 
 The authoritative per-project contract is **`collab/PROTOCOL.md`** (written by
 `/collab-bus:init`). Read it if present; it wins over general guidance here —
-**with one carve-out**: the multi-pair safety rules below (atomic id allocation,
-`pair` routing, resolve-the-peer-every-round) **supersede any PROTOCOL.md that
-predates them**. A file generated before v0.3.0 still says "next id = highest + 1"
-and pins a static `peer agent target: <pane_id>`; both are known to break once a
-second Claude+peer pair opens in the same repo, so do not follow them. Tell the
-human their PROTOCOL.md is stale and offer to patch those two sections.
+**with two carve-outs** that supersede any PROTOCOL.md predating them:
+
+1. The **multi-pair safety rules** below (atomic id allocation, `pair` routing,
+   resolve-the-peer-every-round). A file generated before v0.3.0 still says
+   "next id = highest + 1" — never follow that — and pins a static
+   `peer agent target: <pane_id>`; both are known to break once a second
+   Claude+peer pair opens in the same repo.
+2. The **guarded transport rule**: *both* directions knock through the vendored
+   `collab/bin/knock.sh` (pre-settle + prompt), never a bare
+   `herdr agent prompt ... --wait`. A file generated before v0.4.0 still tells
+   the peer to bare-prompt Claude back, and the project has no (or a pre-0.4)
+   `collab/bin/knock.sh` — so the turn race this version closes survives in the
+   peer → Claude direction until the project is migrated.
+
+**Migrating a stale project** (do this before the first round, with the human's
+OK): re-vendor `collab/bin/` from the plugin
+(`mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
+— the `mkdir -p` matters: a v0.2 project has `collab/` but no `collab/bin/` yet)
+and patch the PROTOCOL.md sections the carve-outs cover — the id-allocation
+text, the pair-routing text, and every line that has an agent bare-prompt the
+other side. **Patch those sections in place; never regenerate the whole file** —
+an existing PROTOCOL.md usually carries project-specific customizations that a
+fresh template would silently discard.
 
 ## Prerequisites (verify before a round)
 
 - **herdr is running**: `herdr status` shows `server: status: running`.
+  collab-bus ≥0.4 needs **herdr ≥ 0.8**: `knock.sh` pre-settles with `agent wait`,
+  and self-identification uses `herdr pane current` (both absent in older herdr).
 - **The peer is a detected herdr agent**: `herdr agent list` returns an agent whose
   `agent`/`name`/`pane_id` identifies the peer (e.g. Codex). herdr auto-detects ~20
   agent kinds; a peer showing `agent_status: unknown` isn't detected — see `/collab-bus:init`.
@@ -50,18 +69,34 @@ human their PROTOCOL.md is stale and offer to patch those two sections.
    message. For a review, point at the diff (`git diff`, branch, files) and give
    your framing / design intent — a cold diff yields a shallow review.
 
-2. **Knock (submit + wait, atomic).** Run:
+2. **Knock (pre-settle, then submit + wait).** Run:
    `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "<nudge naming the exact file>"`
    Pass the pane_id you resolved this round, not the kind name, and name the file —
    "the newest open message" misroutes as soon as another pair has one.
-   This submits the nudge to the peer's prompt and **blocks until the peer's turn
-   settles**, then prints herdr's JSON with the settled `agent_status`. This is the
-   blessed `herdr agent prompt --wait` pattern — there is nothing to poll.
+   This first settles any in-flight peer turn (`agent wait` — herdr's `prompt --wait`
+   does **not** track turns, so prompting a `working` peer can match the *old* turn's
+   completion), then submits the nudge and **blocks until the peer's turn settles**,
+   printing herdr's JSON with the settled `agent_status`. This is the blessed
+   `herdr agent prompt --wait` pattern — there is nothing to poll. Worst case it
+   blocks ~2× `COLLAB_WAIT_MS` (settle the old turn + wait for ours).
 
 3. **Interpret the settled state** from the knock's JSON result:
    - `idle` / `done` → the peer finished; its reply file should be in `collab/inbox/to/claude/`.
-   - `blocked` → the peer is stuck on a permission/approval/question UI. **Surface to
-     the human** (they can see the peer pane) rather than guessing.
+     **If the reply file is missing**, the wait matched a turn that wasn't ours
+     (e.g. another pair knocked the peer in the window between the pre-settle and
+     the prompt) and our nudge is still queued. A plain `agent wait` is useless
+     here — the peer is already settled, so it matches that same idle instantly.
+     Wait for the *next* turn instead: `herdr agent wait <pane_id> --until working
+     --timeout 15000` (flips when the queued nudge starts running), then
+     `herdr agent wait <pane_id> --timeout 600000` for it to settle. **Re-check the
+     inbox after this — including when the `--until working` wait times out**: the
+     queued turn may have started and finished before that wait began, so a timeout
+     does not mean the nudge was lost. Only if the inbox is *still* empty, surface
+     to the human before re-knocking (a blind re-knock duplicates the nudge).
+   - `blocked` (settled state, or knock exit 3 / error `agent_blocked` before
+     submission) → the peer is stuck on a permission/approval/question UI.
+     `herdr agent read <pane_id>` shows what it's stuck on; **surface to the
+     human** rather than guessing.
    - error `agent_not_found` → the peer isn't wired as a herdr agent; run `/collab-bus:init`.
    - `agent_prompt_stalled` / `timeout` → no state change was observed in time. Check
      `collab/inbox/to/claude/` anyway (the peer may have replied), else re-knock or
@@ -84,13 +119,21 @@ is one knock; drive them in sequence.
 
 herdr is *agent-aware*, which removes every failure mode of raw tmux send-keys:
 - **Semantic completion**: `agent prompt --wait` returns on `idle/done/blocked` — you
-  know precisely when the peer finished, instead of polling files and guessing.
+  learn when a turn settles from agent state, instead of polling files and guessing
+  (which turn it was is what the knock's pre-settle guard and step 3 are about).
 - **Clean submission**: `prompt` submits properly; no bracketed-paste "Enter got
   swallowed" bug. **Always prefer `prompt` over `send-keys`** — send-keys bypasses
   state tracking.
 - **Inspectable**: `herdr agent get <pane_id>` and `herdr agent read <pane_id>` show
   the peer's state/output directly — no need to ask the human to eyeball a pane.
+- **Waitable without prompting**: `herdr agent wait <pane_id>` blocks until the peer
+  settles (idle/done/blocked) *without* submitting anything — use it to wait out a
+  peer that is currently `working`. On an already-settled peer it returns
+  immediately, so it cannot by itself "wait for a late reply" — for a missing
+  reply follow the two-stage recovery in step 3.
 - Use the `herdr <subcommand>` CLI wrappers (not raw socket) for all of this.
+- For herdr control beyond what this file covers, run `herdr --skill` — herdr ships
+  a version-matched control skill; prefer it over remembered flag syntax.
 
 ## Multiple pairs in one repo
 
@@ -118,14 +161,19 @@ the same workspace:
 Never hardcode a pane_id, and never trust one written into an older PROTOCOL.md —
 a second pair makes it point at somebody else's agent. Resolve fresh:
 
-1. **Find yourself** by matching `agent_session.value` against your own session id
+1. **Find yourself with `herdr pane current`** (herdr ≥ 0.8): it resolves the
+   *calling* pane live and returns your `pane_id`, `tab_id`, and `agent_session`
+   in one call — no list-scanning. Prefer its live `tab_id` over the `HERDR_TAB_ID`
+   env var, which is a start-time snapshot that goes stale if the pane is moved.
+   Fallback (only if `pane current` fails, e.g. invoked outside a herdr pane):
+   match `agent_session.value` in `herdr agent list` against your own session id
    (for Claude Code that is the last path segment of your scratchpad directory).
    Do *not* use `focused==true`: it fails whenever terminal focus is elsewhere.
 2. **Find the peer** as the agent of the peer kind sharing your `tab_id`.
-   (A peer CLI identifies *itself* from herdr's caller env instead: check
-   `HERDR_ENV=1`, then `herdr agent get "$HERDR_PANE_ID"`; fall back to matching
-   its own session id — e.g. `CODEX_SESSION_ID` — against exactly one
-   `herdr agent list` record.)
+   (A peer CLI identifies *itself* the same way — `herdr pane current` from its
+   own shell; fall back to `herdr agent get "$HERDR_PANE_ID"` when `HERDR_ENV=1`,
+   then to matching its own session id — e.g. `CODEX_SESSION_ID` — against
+   exactly one `herdr agent list` record.)
 3. **Print "ME → PEER" before knocking** so the human can catch a misroute.
 4. If no peer shares your tab, or more than one does, **stop and ask** rather than
    falling back to a static pane_id.
@@ -139,8 +187,9 @@ stop the round, do not retry, and tell the human which pane you hit.
   `herdr agent list`, but only when the match is unambiguous — with two agents of the
   same kind it refuses. That refusal is the signal to resolve by tab (above), not a
   reason to dig an old pane_id out of PROTOCOL.md.
-- **The knock blocks** for up to `COLLAB_WAIT_MS` (default 10 min). That's intended for
-  a review round; don't wrap it inside a latency-sensitive user action.
+- **The knock blocks** for up to ~2× `COLLAB_WAIT_MS` (default 10 min each: settle the
+  in-flight turn, then wait for ours). That's intended for a review round; don't wrap
+  it inside a latency-sensitive user action.
 - **herdr pins the pane during the wait** — don't swap the peer agent mid-round.
 
 ## Related commands

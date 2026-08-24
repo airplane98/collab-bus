@@ -54,7 +54,8 @@ run_lint() {
   # Four empty directories would otherwise satisfy every rule and print all-green.
   # Require the files the rules are actually about.
   for f in commands/init.md commands/send.md commands/status.md \
-           skills/collab/SKILL.md templates/PROTOCOL.template.md scripts/next-id.sh; do
+           skills/collab/SKILL.md templates/PROTOCOL.template.md \
+           scripts/next-id.sh scripts/knock.sh; do
     if [ ! -f "$ROOT/$f" ] || [ ! -r "$ROOT/$f" ]; then
       echo "FAIL: expected file missing or unreadable: $ROOT/$f"
       return 1
@@ -76,6 +77,20 @@ run_lint() {
   # collab root — never put a broad parent in a copy-pasteable rm/rmdir.
   check "no rm/rmdir aimed at a parent dir" \
         '(rmdir|rm -rf|rm -f)[^\n]*\$LOCK/\.\.' "$ROOT/scripts"
+  # v0.4.0 made the transport a guarded two-step (agent wait, then prompt
+  # --wait) with a documented residual window. Claims of atomicity oversell it.
+  check "no atomic-transport claims" \
+        'atomic submit\+wait|submit \+ wait is atomic|submit \+ wait, atomic|送\+等，原子' \
+        "${DOCS[@]}" "$ROOT/scripts"
+  # The reverse (peer → Claude) knock must go through the vendored knock.sh —
+  # a bare `agent prompt --wait` at the peer reintroduces the turn race there.
+  check "no bare reverse agent-prompt knock" \
+        'agent prompt <claude_pane_id' "$ROOT/templates"
+  # The knock's worst-case block is ~2x COLLAB_WAIT_MS (pre-settle + own wait);
+  # a bare 1x claim understates it. {0,2} covers "up to COLLAB_WAIT_MS" with or
+  # without a backtick/$ in between while letting "up to ~2x `COLLAB..." pass.
+  check "no single-timeout claim for the knock" \
+        'up to .{0,2}COLLAB_WAIT_MS' "${DOCS[@]}"
   return $fail
 }
 
@@ -130,6 +145,32 @@ self_test() {
       ng "FAIL-OPEN: empty tree reported as clean (exit=$rc)"
     fi
   fi
+
+  # --- 3b. Each v0.4 transport rule must catch its own regression — the rules
+  #         were added by peer review precisely because self-test 4/4 said
+  #         nothing about them. Same oracle discipline as case 1: assert the
+  #         SPECIFIC finding, not merely a non-zero exit.
+  local i=0 label rel bad
+  while IFS='|' read -r label rel bad; do
+    i=$((i+1))
+    root="$tmp/v04-rule-$i/plugin"
+    if ! mkdir -p "$root" \
+       || ! cp -R "$here/commands" "$here/skills" "$here/templates" "$here/scripts" "$root/" \
+       || ! printf '\n%s\n' "$bad" >> "$root/$rel"; then
+      ng "fixture setup for '$label' failed — case not exercised"
+      continue
+    fi
+    out="$(bash "$me" "$root" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF "FAIL: $label"; then
+      ok "regression for '$label' is caught"
+    else
+      ng "FAIL-OPEN: '$label' missed its planted regression (exit=$rc)"
+    fi
+  done <<'CASES'
+no atomic-transport claims|skills/collab/SKILL.md|The transport is an atomic submit+wait, so nothing can interleave.
+no bare reverse agent-prompt knock|templates/PROTOCOL.template.md|- {{PEER}} knocks back with `herdr agent prompt <claude_pane_id> "..." --wait`.
+no single-timeout claim for the knock|skills/collab/SKILL.md|The knock blocks for up to `COLLAB_WAIT_MS` in total.
+CASES
 
   # --- 4. The real tree must be clean.
   out="$(bash "$me" "$here" 2>&1)"; rc=$?

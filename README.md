@@ -14,14 +14,17 @@ on your work in a multi-round loop, with a durable audit trail — not a one-sho
 herdr is agent-aware: it knows each agent's semantic state (`idle`/`working`/`blocked`/
 `done`). collab-bus rides that instead of raw tmux, so:
 
-- **Submit + wait is atomic** — `herdr agent prompt <peer> "..." --wait` returns exactly
-  when the peer's turn settles. Nothing to poll.
+- **Guarded submit + wait** — `knock.sh` settles any in-flight peer turn
+  (`agent wait`), then `herdr agent prompt <peer> "..." --wait` returns when the
+  peer's turn settles. Nothing to poll. (Two herdr calls, so a small window
+  remains between them; the skill documents the recovery.)
 - **Clean submission** — no bracketed-paste "Enter got swallowed" problem.
 - **Inspectable** — `herdr agent get/read <pane_id>` shows the peer's state/output; no
   need to eyeball a terminal.
 
 > collab-bus **v0.1** used raw tmux `send-keys` + file polling (still in git history).
-> **v0.2+ requires herdr.**
+> **v0.2+ requires herdr; v0.4+ requires herdr ≥ 0.8** (`agent wait`, `pane current`,
+> `agent start`).
 
 ## Install (any machine)
 
@@ -46,17 +49,21 @@ bundled `collab` skill drives the write → knock → read → archive loop.
 
 ### Wiring the peer
 
-1. In a herdr workspace, open a pane/tab and run the peer CLI in your project
-   (`cd <project> && codex`). herdr auto-detects ~20 agent kinds.
-2. `/collab-bus:init codex` — scaffolds `collab/`, finds the peer's herdr `pane_id`,
-   writes the protocol, and runs the onboarding handshake.
-3. From then on, each round is one knock: `herdr agent prompt <peer> --wait` submits and
-   blocks until the peer finishes.
+1. `/collab-bus:init codex` — scaffolds `collab/`, wires the peer itself when possible
+   (`herdr pane split --current` + `herdr agent start`, so the peer lands in your own
+   tab), writes the protocol, and runs the onboarding handshake. Manual alternative:
+   open a pane **in the same tab** and run the peer CLI there (`cd <project> && codex`);
+   herdr auto-detects ~20 agent kinds.
+2. From then on, each round is one knock: `knock.sh` settles any in-flight peer turn
+   (`herdr agent wait`), then `herdr agent prompt <peer> --wait` submits and blocks
+   until the peer finishes.
 
 ## How it works
 
-- **Transport + completion**: `herdr agent prompt <pane_id> "<nudge>" --wait` (via
-  `scripts/knock.sh`) — the blessed herdr CLI pattern; prefer `prompt` over `send-keys`.
+- **Transport + completion**: `scripts/knock.sh` = `herdr agent wait` (pre-settle:
+  `prompt --wait` doesn't track turns, so a busy peer could match the *old* turn) +
+  `herdr agent prompt <pane_id> "<nudge>" --wait` — the blessed herdr CLI pattern;
+  prefer `prompt` over `send-keys`.
 - **Bus**: `collab/inbox/to/{claude,<peer>}` + `archive/`; one markdown message per file.
 - **Protocol**: `collab/PROTOCOL.md` (written by `init`) is the per-project contract.
 
