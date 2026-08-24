@@ -44,10 +44,19 @@ check() { # <label> <regex> <target...>
 
 run_lint() {
   local ROOT="$1"
-  local d
+  local d f
   for d in commands skills templates scripts; do
     if [ ! -d "$ROOT/$d" ] || [ ! -r "$ROOT/$d" ]; then
       echo "FAIL: expected directory missing or unreadable: $ROOT/$d"
+      return 1
+    fi
+  done
+  # Four empty directories would otherwise satisfy every rule and print all-green.
+  # Require the files the rules are actually about.
+  for f in commands/init.md commands/send.md commands/status.md \
+           skills/collab/SKILL.md templates/PROTOCOL.template.md scripts/next-id.sh; do
+    if [ ! -f "$ROOT/$f" ] || [ ! -r "$ROOT/$f" ]; then
+      echo "FAIL: expected file missing or unreadable: $ROOT/$f"
       return 1
     fi
   done
@@ -71,31 +80,61 @@ run_lint() {
 }
 
 self_test() {
-  local here me tmp root rc t=0 f=0
+  local me here tmp root out rc t=0 f=0
   me="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  here="$(dirname "$me")/.."
+  here="$(cd "$(dirname "$me")/.." && pwd)"
   ok() { t=$((t+1)); echo "  ✓ $1"; }
   ng() { t=$((t+1)); f=$((f+1)); echo "  ✗ $1"; }
 
-  # 1. A root whose PATH contains "doclint" and a space must still catch a bug.
-  tmp="$(mktemp -d)"; root="$tmp/doclint regression/plugin"
-  mkdir -p "$root"; cp -R "$here"/{commands,skills,templates,scripts} "$root"/ 2>/dev/null
-  printf '\nDEST=$("${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" x y w1:t1)\n' \
-    >> "$root/templates/PROTOCOL.template.md"
-  bash "$me" "$root" >/dev/null 2>&1; rc=$?
-  [ "$rc" -ne 0 ] && ok "bug in a path containing 'doclint' and a space is caught" \
-                  || ng "FAIL-OPEN: bug hidden by the path name"
-  rm -rf "$tmp"
+  tmp="$(mktemp -d)" || { echo "  ✗ fixture setup: mktemp failed"; return 1; }
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" RETURN
 
-  # 2. A nonexistent root must not report success.
-  bash "$me" "/nonexistent/$$-no-such-plugin" >/dev/null 2>&1; rc=$?
-  [ "$rc" -ne 0 ] && ok "missing target directory fails" \
-                  || ng "FAIL-OPEN: missing target reported as clean"
-  rm -rf "$tmp"
+  # --- 1. A bug must be caught even when the ROOT PATH contains "doclint" and a
+  #        space. The oracle asserts the SPECIFIC finding, not merely a non-zero
+  #        exit: a half-copied fixture also exits non-zero, and counting that as
+  #        success is how a self-test passes without testing anything.
+  root="$tmp/doclint regression/plugin"
+  if ! mkdir -p "$root" \
+     || ! cp -R "$here/commands" "$here/skills" "$here/templates" "$here/scripts" "$root/" \
+     || ! printf '\nDEST=$("${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" x y w1:t1)\n' \
+          >> "$root/templates/PROTOCOL.template.md"; then
+    ng "fixture setup for case 1 failed — case not exercised"
+  else
+    out="$(bash "$me" "$root" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "FAIL: template must use the vendored allocator"; then
+      ok "bug in a path containing 'doclint' and a space is caught"
+    else
+      ng "FAIL-OPEN: expected the template-allocator finding (exit=$rc)"
+    fi
+  fi
 
-  # 3. The real tree must be clean.
-  bash "$me" "$here" >/dev/null 2>&1; rc=$?
-  [ "$rc" -eq 0 ] && ok "current tree is clean" || ng "current tree has findings"
+  # --- 2. A missing target must fail, and for the stated reason.
+  out="$(bash "$me" "$tmp/definitely-not-a-plugin" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "expected directory missing or unreadable"; then
+    ok "missing target directory fails with the stated reason"
+  else
+    ng "FAIL-OPEN: missing target not reported correctly (exit=$rc)"
+  fi
+
+  # --- 3. An empty-but-present tree must fail too, or "all rules pass" would be
+  #        satisfiable by having nothing to read.
+  root="$tmp/empty"
+  if ! mkdir -p "$root"/{commands,skills,templates,scripts}; then
+    ng "fixture setup for case 3 failed — case not exercised"
+  else
+    out="$(bash "$me" "$root" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "expected file missing or unreadable"; then
+      ok "empty tree fails instead of passing every rule"
+    else
+      ng "FAIL-OPEN: empty tree reported as clean (exit=$rc)"
+    fi
+  fi
+
+  # --- 4. The real tree must be clean.
+  out="$(bash "$me" "$here" 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "current tree is clean" \
+                  || { ng "current tree has findings"; printf '%s\n' "$out" | sed 's/^/      /'; }
 
   echo "self-test: $((t-f))/$t passed"
   [ "$f" -eq 0 ]
