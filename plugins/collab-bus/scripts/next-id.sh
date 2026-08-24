@@ -100,8 +100,9 @@ describe_lock() {
           echo "  pid $pid is ALIVE on this host — the lock is genuinely held; wait." >&2
         else
           echo "  pid $pid is not running on this host — the holder probably crashed." >&2
-          echo "  To clear: stop every allocator entry point first and keep new ones from" >&2
-          echo "  starting, then:  rmdir '$LOCK/..' 2>/dev/null; rm -f '$OWNER_FILE' && rmdir '$LOCK'" >&2
+          echo "  To clear: stop every allocator entry point first and keep new ones" >&2
+          echo "  from starting, then remove exactly the lock and nothing else:" >&2
+          echo "    rm -f '$OWNER_FILE' && rmdir '$LOCK'" >&2
         fi
       else
         echo "  owner is on another host or unparseable — do not guess; check the other machine." >&2

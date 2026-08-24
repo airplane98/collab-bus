@@ -20,10 +20,23 @@ check() { # <label> <regex> <files...>
     echo "ok:   $label"
   fi
 }
-DOCS="$ROOT/commands $ROOT/skills $ROOT/templates"
-check "no hand-computed ids"        'highest .?NNNN|max\+1|highest \+ 1' $DOCS
-check "no fixed onboarding numbers" '000[12]-onboarding' $DOCS
-check "no 'newest/latest open' as an instruction" '讀最新 .?open|newest open message|latest open' $DOCS
-check "no kind-name knock"          'knock\.sh" <(peer|PEER)>|knock\.sh <對方>' $DOCS
-check "no herdr agent list --json"  'agent list --json' $DOCS
+# Bash array, not word splitting: a plugin path containing a space would split
+# into bogus targets and silently lint nothing.
+DOCS=("$ROOT/commands" "$ROOT/skills" "$ROOT/templates")
+
+check "no hand-computed ids"        'highest .?NNNN|max\+1|highest \+ 1' "${DOCS[@]}"
+check "no fixed onboarding numbers" '000[12]-onboarding|archive .?0001|read .?0002' "${DOCS[@]}"
+check "no 'newest/latest open' as an instruction" '讀最新 .?open|newest open message|latest open' "${DOCS[@]}"
+check "no kind-name knock"          'knock\.sh" <(peer|PEER)>|knock\.sh <對方>' "${DOCS[@]}"
+check "no herdr agent list --json"  'agent list --json' "${DOCS[@]}"
+# The PROTOCOL template is copied verbatim into a project, where the peer CLI has
+# no CLAUDE_PLUGIN_ROOT. commands/ and skills/ may legitimately reference the
+# plugin path as a fallback, so this rule is scoped to templates only.
+check "template must use the vendored allocator" \
+      'CLAUDE_PLUGIN_ROOT./scripts/next-id\.sh' "$ROOT/templates"
+# A suggested cleanup command must target the lock itself. "$LOCK/.." is the
+# collab root — never put a broad parent in a copy-pasteable rm/rmdir.
+check "no rm/rmdir aimed at a parent dir" \
+      '(rmdir|rm -rf|rm -f)[^\n]*\$LOCK/\.\.' "$ROOT/scripts"
+
 exit $fail

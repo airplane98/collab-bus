@@ -30,7 +30,7 @@ collab/
 一則訊息 = `inbox/to/<recipient>/` 下一個 markdown 檔。
 **檔名**：`NNNN-<tab>-<slug>.md`，例：`0034-w3t3-review-auth.md`。
 
-> **編號必須用 `${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh` 原子性配號。**
+> **編號必須用 `collab/bin/next-id.sh` 原子性配號**（雙方共用同一入口）。
 >
 > 「下一個 id = 現有最大 NNNN + 1」是 read-then-write，**兩個 session 同時算就會撞號**
 > （實際發生過：同一個收件匣出現兩則 `0033`）。
