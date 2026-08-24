@@ -32,12 +32,16 @@ human their PROTOCOL.md is stale and offer to patch those two sections.
 
 ## Running one round (write → knock → read → archive)
 
-1. **Write the message.** Allocate the id atomically — never compute
-   "highest + 1" yourself, that races with a concurrent pair and produces two
-   messages with the same number:
+1. **Write the message.** Allocate the id atomically.
+   Never compute "highest + 1" yourself: that races with a concurrent pair and
+   hands both of them the same number.
 
    ```bash
-   DEST=$("${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" <peer> <slug> <my-tab-id>)
+   # Prefer the project's vendored copy — the peer CLI has no CLAUDE_PLUGIN_ROOT,
+   # so both sides must call one entrypoint or they drift apart.
+   ALLOC=collab/bin/next-id.sh
+   [ -x "$ALLOC" ] || ALLOC="${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh"
+   DEST=$("$ALLOC" <peer> <slug> <my-tab-id>)
    ```
 
    It returns the path of an empty placeholder file it already reserved; write the
@@ -47,7 +51,9 @@ human their PROTOCOL.md is stale and offer to patch those two sections.
    your framing / design intent — a cold diff yields a shallow review.
 
 2. **Knock (submit + wait, atomic).** Run:
-   `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer> "<one-line nudge>"`
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "<nudge naming the exact file>"`
+   Pass the pane_id you resolved this round, not the kind name, and name the file —
+   "the newest open message" misroutes as soon as another pair has one.
    This submits the nudge to the peer's prompt and **blocks until the peer's turn
    settles**, then prints herdr's JSON with the settled `agent_status`. This is the
    blessed `herdr agent prompt --wait` pattern — there is nothing to poll.

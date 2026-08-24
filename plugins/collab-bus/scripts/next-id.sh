@@ -19,9 +19,9 @@
 #   e.g.  next-id.sh codex review-auth w3:t3
 # Prints: the path of the created (empty) message file.
 #
-# Env: COLLAB_ROOT (default: ./collab), COLLAB_LOCK_WAIT_SEC (default 60),
-#      COLLAB_LOCK_WAIT_SEC (default 60). There is no automatic stale recovery:
-#      a stuck lock reports who holds it and stops. See describe_lock().
+# Env: COLLAB_ROOT (default: ./collab), COLLAB_LOCK_WAIT_SEC (default 60).
+#      There is no automatic stale recovery: a stuck lock reports who holds it
+#      and stops. See describe_lock().
 set -euo pipefail
 
 COLLAB_ROOT="${COLLAB_ROOT:-collab}"
@@ -32,11 +32,14 @@ TAB="${3:?usage: next-id.sh <to> <slug> <tab>  (tab is required, e.g. w3:t3)}"
 # --- validate inputs: these become path components ---------------------------
 # Allowlist, not a blocklist. The previous version excluded "/" and ".." but a
 # glob like w*:t* still accepted "w1:t1/escape", which reached mkdir -p.
-if ! [[ "$TO" =~ ^[A-Za-z0-9._-]+$ ]]; then
-  echo "error: to '$TO' must match [A-Za-z0-9._-]+" >&2; exit 2
+# The first character must be alphanumeric. A plain allowlist of [A-Za-z0-9._-]
+# still accepts "." and "..", and TO=".." lands the message in inbox/ instead of
+# inbox/to/<recipient>/ — an escape a slash test never reaches.
+if ! [[ "$TO" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "error: to '$TO' must start with a letter or digit and match [A-Za-z0-9._-]*" >&2; exit 2
 fi
-if ! [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]]; then
-  echo "error: slug '$SLUG' must match [A-Za-z0-9._-]+" >&2; exit 2
+if ! [[ "$SLUG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "error: slug '$SLUG' must start with a letter or digit and match [A-Za-z0-9._-]*" >&2; exit 2
 fi
 if ! [[ "$TAB" =~ ^w[0-9]+:t[0-9]+$ ]]; then
   echo "error: tab '$TAB' must match ^w[0-9]+:t[0-9]+\$ (e.g. w3:t3)" >&2; exit 2
@@ -48,6 +51,7 @@ COLLAB_ROOT="$(cd "$COLLAB_ROOT" && pwd -P)"
 LOCK="$COLLAB_ROOT/.idlock"
 OWNER_FILE="$LOCK/owner"
 WAIT_SEC="${COLLAB_LOCK_WAIT_SEC:-60}"
+[[ "$WAIT_SEC" =~ ^[0-9]+$ ]] || { echo "error: COLLAB_LOCK_WAIT_SEC must be a non-negative integer" >&2; exit 2; }
 # Identifies THIS process. Checked before releasing, so we can never remove a
 # lock somebody else now holds.
 TOKEN="$(hostname -s 2>/dev/null || echo host):$$:${RANDOM}${RANDOM}"
@@ -96,13 +100,21 @@ describe_lock() {
           echo "  pid $pid is ALIVE on this host — the lock is genuinely held; wait." >&2
         else
           echo "  pid $pid is not running on this host — the holder probably crashed." >&2
-          echo "  If you are sure no allocator is running:  rm -rf '$LOCK'" >&2
+          echo "  To clear: stop every allocator entry point first and keep new ones from" >&2
+          echo "  starting, then:  rmdir '$LOCK/..' 2>/dev/null; rm -f '$OWNER_FILE' && rmdir '$LOCK'" >&2
         fi
       else
         echo "  owner is on another host or unparseable — do not guess; check the other machine." >&2
       fi
       ;;
-    *) echo "  If you are sure no allocator is running:  rm -rf '$LOCK'" >&2 ;;
+    *)
+      # Ownerless is exactly the "paused between mkdir and token write" state, so
+      # do not recommend a recursive delete on a momentary observation. rmdir
+      # fails if an owner file appears meanwhile, which is the safe outcome.
+      echo "  No owner recorded — this may be a process paused between creating the" >&2
+      echo "  lock and writing its token. Stop every allocator entry point and prevent" >&2
+      echo "  new ones from starting, then:  rmdir '$LOCK'   (it fails if an owner" >&2
+      echo "  file appears in the meantime, which is the safe outcome)" >&2 ;;
   esac
 }
 

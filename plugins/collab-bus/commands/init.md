@@ -28,7 +28,8 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
      `focused`), note your `tab_id`, and accept a peer of the right kind **only if
      exactly one shares that tab**. With several pairs open, "the detected kind"
      is not enough — it can be somebody else's agent.
-   - Otherwise instruct the human: open a new herdr pane/tab (split the workspace) and
+   - Otherwise instruct the human: open a new herdr **pane in this same tab**
+     (a new tab would not satisfy the same-tab pairing above) and
      run the peer CLI there in this project dir, e.g. `cd <project> && codex`. herdr
      auto-detects ~20 agent kinds (Codex, Claude Code, Copilot CLI, …). Then re-run
      `herdr agent list` and take the new `pane_id`.
@@ -48,12 +49,16 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
    id either; ask it to allocate its own and reply with `reply_to: <your id>`
    (frontmatter per PROTOCOL, `type: task`, `status: open`) instructing the peer to:
    read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; confirm its role
-   as reviewer; then reply with `0002-onboarding-ack.md` to `collab/inbox/to/claude/`
-   (its stack summary + whether it can run git/tests) and archive `0001`.
+   as reviewer; then reply into `collab/inbox/to/claude/` using **its own allocator
+   call** (never a fixed number) with `reply_to: <the onboarding id you just got>`
+   and `pair: <your tab_id>` — its stack summary + whether it can run git/tests —
+   and archive the onboarding message.
 
-7. **Kick off the handshake** (only if the peer agent is already detected): knock it —
-   `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <PEER> "Handshake: process 0001-onboarding"` —
-   which submits and waits for the peer's turn, then read `0002` and archive per PROTOCOL.
+7. **Kick off the handshake** (only if the peer agent is already detected): knock the
+   **pane_id resolved in step 4** and name the **actual file** written in step 6 —
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "Handshake: process $DEST"` —
+   which submits and waits for the peer's turn. Then find the reply by matching
+   `pair` + `reply_to`, never by guessing a file number, and archive per PROTOCOL.
    If the peer isn't wired yet, tell the human the one step (run the peer in a herdr pane)
    and stop.
 

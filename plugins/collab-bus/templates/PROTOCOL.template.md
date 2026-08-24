@@ -36,7 +36,8 @@ collab/
 > （實際發生過：同一個收件匣出現兩則 `0033`）。
 >
 > ```bash
-> DEST=$("${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" {{PEER}} review-my-topic w3:t3)
+> # 雙方都用專案內的同一個入口（peer CLI 沒有 CLAUDE_PLUGIN_ROOT）
+> DEST=$(collab/bin/next-id.sh {{PEER}} review-my-topic w3:t3)
 > # 然後把內容寫進 $DEST
 > ```
 >
@@ -77,9 +78,12 @@ status: open            # open | done
 ## 收發流程（一輪）
 
 1. **寫**：發訊方在 `inbox/to/<對方>/` 建 `NNNN-*.md`，`status: open`。
-2. **敲門（送+等，原子）**：發訊方跑 plugin 的 `knock.sh <對方> "<一句話>"`
+2. **敲門（送+等，原子）**：先依「herdr 座標」那節**動態解析出對方的 pane_id**，
+   再跑 `knock.sh <peer_pane_id> "<一句話，並指名檔案路徑>"`
    → herdr `agent prompt --wait` 提交 nudge 並阻塞到對方那一輪 settle，回傳 `agent_status`。
-3. **讀 + 做**：對方 settle 後（idle/done）讀最新 `open` 訊息、執行；`blocked` 就喊人類。
+3. **讀 + 做**：對方 settle 後（idle/done）**只讀 nudge 指名的那個檔**；
+   若未指名，只處理 `pair` 等於自己 tab_id 的 `open` 訊息，其餘不動也不歸檔。
+   `blocked` 就喊人類。
 4. **回覆**：收訊方在 `inbox/to/<發訊方>/` 建新 `NNNN-*.md`（`reply_to` 指回原 id），
    把**原訊息**搬到 `inbox/archive/`，換手敲門回去。
 

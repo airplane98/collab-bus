@@ -2,7 +2,7 @@
   "name": "collab-bus",
   "displayName": "Collab Bus",
   "description": "Collaborate with a peer AI CLI (e.g. Codex) running as a herdr-managed agent: send review/task requests, submit-and-wait via herdr agent state, and iterate to sign-off over a filesystem message bus.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "author": {
     "name": "airplane98"
   },
