@@ -69,6 +69,11 @@ bundled `collab` skill drives the write → knock → read → archive loop.
   collision-resistant, and generated with no coordination. There is no shared
   counter and therefore no lock; two agents (even across a synced folder) allocate
   independently with a negligible collision probability.
+- **Atomic publish** (v0.6): `next-id.sh` returns a hidden **draft**
+  (`.<ULID>-…md.part`); the sender writes the body and then `scripts/publish.sh`
+  renames it to the final `<ULID>-…md`. A same-dir rename is atomic, so a receiver
+  scanning the inbox never reads a reserved-but-empty message. publish.sh refuses a
+  0-byte draft — the last guard against shipping an empty message.
 - **Protocol**: `collab/PROTOCOL.md` (written by `init`) is the per-project contract.
 
 ## When to use this vs a review plugin
@@ -84,7 +89,8 @@ plugins/collab-bus/
 ├── .claude-plugin/plugin.json
 ├── skills/collab/SKILL.md          # the orchestration workflow
 ├── commands/{init,send,status}.md  # /collab-bus:* commands
-├── scripts/next-id.sh              # allocate a message: mint a ULID + create the file
+├── scripts/next-id.sh              # allocate a message: mint a ULID, create a .md.part draft
+├── scripts/publish.sh              # atomic publish: rename the draft to the final .md
 ├── scripts/knock.sh                # herdr transport: agent prompt --wait
 └── templates/PROTOCOL.template.md  # per-project protocol, filled by init
 ```

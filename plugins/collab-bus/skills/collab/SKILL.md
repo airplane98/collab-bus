@@ -49,24 +49,29 @@ fresh template would silently discard.
 - `collab/` exists in the project (else run `/collab-bus:init [peer]`).
 - The knock script is `${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh`.
 
-## Running one round (write → knock → read → archive)
+## Running one round (write → publish → knock → read → archive)
 
-1. **Write the message.** Allocate the id with `next-id.sh` (v0.5: it mints a
-   ULID — no coordination, no lock). Never hand-craft an id; never compute "highest + 1" — that counter race is what the ULID rewrite deleted.
+1. **Write, then publish the message.** Allocate with `next-id.sh` (v0.5: a ULID,
+   no lock). Never hand-craft an id; never compute "highest + 1" — that counter
+   race is what the ULID rewrite deleted.
 
    ```bash
-   # Prefer the project's vendored copy — the peer CLI has no CLAUDE_PLUGIN_ROOT,
+   # Prefer the project's vendored copies — the peer CLI has no CLAUDE_PLUGIN_ROOT,
    # so both sides must call one entrypoint or they drift apart.
-   ALLOC=collab/bin/next-id.sh
-   [ -x "$ALLOC" ] || ALLOC="${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh"
-   DEST=$("$ALLOC" <peer> <slug> <my-tab-id>)
+   BIN=collab/bin; [ -x "$BIN/next-id.sh" ] || BIN="${CLAUDE_PLUGIN_ROOT}/scripts"
+   DRAFT=$("$BIN/next-id.sh" <peer> <slug> <my-tab-id>)   # a .md.part draft
+   #   …write the full message into $DRAFT…
+   DEST=$("$BIN/publish.sh" "$DRAFT")                     # atomic rename -> final .md
    ```
 
-   It returns the path of an empty placeholder file it already reserved; write the
-   content into that path. Fill PROTOCOL frontmatter (`pair: <my tab_id>`,
-   `from: claude`, `to: <peer>`, precise `type`, `status: open`). One concern per
-   message. For a review, point at the diff (`git diff`, branch, files) and give
-   your framing / design intent — a cold diff yields a shallow review.
+   `next-id.sh` returns a **draft** path (`.<ULID>-…md.part`), not the final
+   message — the final `<ULID>-…md` must only appear via `publish.sh`'s atomic
+   rename, so the peer never reads a reserved-but-empty file. Write the whole
+   message into `$DRAFT` first (PROTOCOL frontmatter: `pair: <my tab_id>`,
+   `from: claude`, `to: <peer>`, precise `type`, `status: open`), **then publish** —
+   `publish.sh` refuses an empty draft, so never publish before writing the body.
+   One concern per message. For a review, point at the diff (`git diff`, branch,
+   files) and give your framing / design intent — a cold diff yields a shallow review.
 
 2. **Knock (pre-settle, then submit + wait).** Run:
    `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "<nudge naming the exact file>"`

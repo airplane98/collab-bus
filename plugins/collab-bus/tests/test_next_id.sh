@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Tests for next-id.sh after the v0.5.0 ULID rewrite. The whole lock apparatus
-# (mkdir mutex, owner tokens, ghost-lock recovery, /tmp path hardening) is gone,
-# so what has to hold now is: ids are well-formed ULIDs, unique, time-ordered,
-# collision-resistant under concurrency WITHOUT any lock, input validation still
-# guards the path components, and exclusive-create still refuses to clobber.
+# Tests for next-id.sh. The ULID rewrite (v0.5) deleted the whole lock apparatus;
+# v0.6 makes the allocator hand back a DRAFT (`.<ULID>-<tab>-<slug>.md.part`)
+# rather than the final message. What has to hold: ids are well-formed ULIDs,
+# unique, time-ordered, collision-resistant under concurrency WITHOUT any lock,
+# input validation still guards the path components, and exclusive-create still
+# refuses to clobber a draft. (The draft->final publish is test_publish.sh.)
 set -uo pipefail
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/scripts/next-id.sh"
 CROCK='0123456789ABCDEFGHJKMNPQRSTVWXYZ'
@@ -11,19 +12,21 @@ fails=0
 ok()  { echo "  ok   - $1"; }
 bad() { echo "  FAIL - $1" >&2; fails=$((fails+1)); }
 
-# id() extracts the ULID from an allocated destination path's basename.
-idof() { basename "$1" | cut -d- -f1; }
+# idof() extracts the ULID from a draft (or final) path's basename: drop the
+# leading dot the draft carries, then take everything before the first '-'.
+idof() { local b; b="$(basename "$1")"; b="${b#.}"; printf '%s' "${b%%-*}"; }
 
 newroot() { local t; t="$(mktemp -d)"; mkdir -p "$t/collab/inbox"; printf '%s' "$t"; }
 
-# --- 1. format: 26 Crockford chars -------------------------------------------
+# --- 1. format: draft path + 26 Crockford chars ------------------------------
 t="$(newroot)"
 dest="$(cd "$t" && bash "$SCRIPT" codex fmt w1:t1)"
-id="$(idof "$dest")"
-if [ "${#id}" = 26 ] && [ -z "${id//[$CROCK]/}" ] && [[ "${id:0:1}" =~ [0-7] ]]; then
-  ok "id is 26 Crockford chars, first in [0-7] (48-bit ts upper bound) ($id)"
+id="$(idof "$dest")"; dbase="$(basename "$dest")"
+if [ "${#id}" = 26 ] && [ -z "${id//[$CROCK]/}" ] && [[ "${id:0:1}" =~ [0-7] ]] \
+   && [[ "$dbase" == .*.md.part ]] && [ -f "$dest" ]; then
+  ok "allocator returns a .md.part draft with a 26-char Crockford id, first in [0-7] ($id)"
 else
-  bad "malformed id: '$id' (len ${#id})"
+  bad "malformed draft/id: '$dbase' id='$id' (len ${#id})"
 fi
 rm -rf "$t"
 
@@ -50,8 +53,10 @@ fi
 # --- 4. bulk uniqueness: 200 ids, no duplicates ------------------------------
 t="$(newroot)"
 for i in $(seq 1 200); do (cd "$t" && bash "$SCRIPT" codex "bulk$i" w1:t1 >/dev/null); done
-n="$(ls "$t/collab/inbox/to/codex" | sed 's/-.*//' | sort | wc -l | tr -d ' ')"
-u="$(ls "$t/collab/inbox/to/codex" | sed 's/-.*//' | sort -u | wc -l | tr -d ' ')"
+# Drafts are dotfiles, so list with -A. Distinctness of the leading token still
+# holds (the leading dot is uniform, so it never merges two distinct ULIDs).
+n="$(ls -A "$t/collab/inbox/to/codex" | sed 's/-.*//' | sort | wc -l | tr -d ' ')"
+u="$(ls -A "$t/collab/inbox/to/codex" | sed 's/-.*//' | sort -u | wc -l | tr -d ' ')"
 [ "$n" = 200 ] && [ "$u" = 200 ] && ok "200 ids are all distinct" || bad "bulk collision (n=$n unique=$u)"
 rm -rf "$t"
 
@@ -66,8 +71,8 @@ for wave in 1 2 3; do
   done
   for p in "${pids[@]}"; do wait "$p"; done
 done
-n="$(ls "$t/collab/inbox/to/codex" | sed 's/-.*//' | wc -l | tr -d ' ')"
-u="$(ls "$t/collab/inbox/to/codex" | sed 's/-.*//' | sort -u | wc -l | tr -d ' ')"
+n="$(ls -A "$t/collab/inbox/to/codex" | sed 's/-.*//' | wc -l | tr -d ' ')"
+u="$(ls -A "$t/collab/inbox/to/codex" | sed 's/-.*//' | sort -u | wc -l | tr -d ' ')"
 [ "$n" = 24 ] && [ "$u" = 24 ] && ok "24 concurrent lock-free allocations are all distinct" || bad "concurrent collision (n=$n unique=$u)"
 rm -rf "$t"
 

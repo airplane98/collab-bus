@@ -37,10 +37,16 @@ collab/
 >
 > ```bash
 > # 雙方都用專案內的同一個入口（peer CLI 沒有 CLAUDE_PLUGIN_ROOT）
-> DEST=$(collab/bin/next-id.sh {{PEER}} review-my-topic w3:t3)
-> # 然後把內容寫進 $DEST
+> DRAFT=$(collab/bin/next-id.sh {{PEER}} review-my-topic w3:t3)   # 回傳 .md.part 草稿
+> # …把完整內容寫進 $DRAFT…
+> DEST=$(collab/bin/publish.sh "$DRAFT")   # 原子 rename 成最終 .md
 > ```
 >
+> **v0.6：先寫草稿，再 publish（原子上架）。** `next-id.sh` 回傳的是**草稿**路徑
+> （`.<ULID>-…md.part`，點開頭、`.part` 結尾，收件匣掃描看不到），不是最終訊息。
+> 寫完內容後用 `publish.sh` 原子 rename 成 `<ULID>-…md`——**最終 .md 只透過這個
+> rename 出現**，所以收訊方永遠不會讀到「已佔號但還沒填內容」的空訊息（本專案實際
+> 踩過空回覆檔）。`publish.sh` 會拒絕空草稿，別在寫內容前就 publish。
 > **v0.5 起 id 是 ULID**（48-bit 毫秒時間戳 + 80 隨機位元，Crockford base32，
 > 26 字元），**不再是共享計數器，因此沒有鎖**。ULID 不需要任何協調就唯一：兩個
 > agent——甚至同步資料夾後的兩台機器——各自獨立產生，撞號機率可忽略（每毫秒 80
@@ -73,7 +79,8 @@ status: open            # open | done
 
 ## 收發流程（一輪）
 
-1. **寫**：發訊方用 `next-id.sh` 在 `inbox/to/<對方>/` 建訊息檔，`status: open`。
+1. **寫 + 上架**：發訊方 `next-id.sh` 取草稿路徑 → 把完整內容（含 `status: open`）
+   寫進草稿 → `publish.sh` 原子 rename 成最終 `.md`（見上「先寫草稿，再 publish」）。
 2. **敲門（先等，再送+等）**：先依「herdr 座標」那節**動態解析出對方的 pane_id**，
    再跑 `collab/bin/knock.sh <對方_pane_id> "<一句話，並指名檔案路徑>"`（雙方共用
    這一個入口，方向相反也一樣）。
@@ -83,6 +90,7 @@ status: open            # open | done
    之後才是 `agent prompt --wait` 提交 nudge 並阻塞到對方那一輪 settle，回傳 `agent_status`。
 3. **讀 + 做**：對方 settle 後（idle/done）**只讀 nudge 指名的那個檔**；
    若未指名，只處理 `pair` 等於自己 tab_id 的 `open` 訊息，其餘不動也不歸檔。
+   （只認 `.md`；`.<…>.md.part` 是還沒 publish 的草稿，掃描時本來就看不到、也不要碰。）
    settle 了卻**找不到回覆檔**：等到的不是你那一輪（例如別組在 pre-settle 與提交
    之間也敲了它），你的 nudge 還排在隊裡。此時裸跑一次 `agent wait` 沒有用——
    對方已經 settle，它會立刻 match 同一個 idle。要等**下一輪**：
@@ -93,8 +101,8 @@ status: open            # open | done
    **不要**直接重敲（會重複下指令）。
    `blocked`（或提交前就被拒的 `agent_blocked`）就喊人類；
    `herdr agent read <peer_pane_id>` 可看它卡在哪個確認畫面。
-4. **回覆**：收訊方用 `next-id.sh` 在 `inbox/to/<發訊方>/` 建新訊息檔（`reply_to`
-   指回原 id），把**原訊息**搬到 `inbox/archive/`，換手敲門回去。
+4. **回覆**：收訊方用 `next-id.sh` + `publish.sh` 在 `inbox/to/<發訊方>/` 上架新
+   訊息（`reply_to` 指回原 id），把**原訊息**搬到 `inbox/archive/`，換手敲門回去。
 
 ## 硬規則（避免互相踩）
 

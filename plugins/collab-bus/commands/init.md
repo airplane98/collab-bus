@@ -22,8 +22,9 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
 
 3. **Re-run on an existing project = migration, not re-scaffold.** If `collab/`
    already exists: update the vendored scripts
-   (`mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
-   — the `mkdir -p` matters: a v0.2 project has no `collab/bin/` yet),
+   (`mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/publish.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
+   — the `mkdir -p` matters: a v0.2 project has no `collab/bin/` yet; publish.sh is
+   new in v0.6, so a v0.3–v0.5 project gains it here),
    then **patch** the existing PROTOCOL.md in place — the id-allocation, pair-routing,
    and transport sections (any line having an agent bare-prompt the other side must
    route through `collab/bin/knock.sh`), plus its recorded plugin version — and skip
@@ -67,22 +68,25 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
 
 6. **Write `collab/PROTOCOL.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/PROTOCOL.template.md`,
    substituting `{{PROJECT}}` and `{{PEER}}`. (`{{TARGET}}` is gone — coordinates are
-   resolved dynamically, not stored.) Also vendor the allocator AND the knock
-   script into the project so the peer CLI — which has no `CLAUDE_PLUGIN_ROOT` —
-   calls the same entrypoints (the reverse knock needs the same pre-settle guard,
-   or the turn race survives in the peer → Claude direction):
-   `mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
+   resolved dynamically, not stored.) Also vendor the allocator, the publish
+   script, AND the knock script into the project so the peer CLI — which has no
+   `CLAUDE_PLUGIN_ROOT` — calls the same entrypoints (the reverse knock needs the
+   same pre-settle guard, and the peer must publish atomically too, or the turn
+   race / empty-message race survives in the peer → Claude direction):
+   `mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/publish.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
    and record the plugin version they came from in PROTOCOL.md.
 
 7. **Write the onboarding message** via the allocator (never a hardcoded `0001`):
-   `DEST=$(collab/bin/next-id.sh <PEER> onboarding <your-tab-id>)`, with
-   `pair: <your tab_id>` in the frontmatter. The inbox may not be empty, so do not
+   `DRAFT=$(collab/bin/next-id.sh <PEER> onboarding <your-tab-id>)` → write the body
+   into `$DRAFT` with `pair: <your tab_id>` in the frontmatter → publish it
+   `DEST=$(collab/bin/publish.sh "$DRAFT")`. The inbox may not be empty, so do not
    assume any particular number — and do not tell the peer to reply with a specific
    id either; ask it to allocate its own and reply with `reply_to: <your id>`
    (frontmatter per PROTOCOL, `type: task`, `status: open`) instructing the peer to:
    read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; confirm its role
-   as reviewer; then reply into `collab/inbox/to/claude/` using **its own allocator
-   call** (never a fixed number) with `reply_to: <the onboarding id you just got>`
+   as reviewer; then reply into `collab/inbox/to/claude/` using **its own
+   next-id.sh + publish.sh** (never a fixed number, and publish so its reply is
+   never read half-written) with `reply_to: <the onboarding id you just got>`
    and `pair: <your tab_id>` — its stack summary + whether it can run git/tests —
    and archive the onboarding message.
 

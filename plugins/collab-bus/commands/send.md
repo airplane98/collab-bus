@@ -14,20 +14,22 @@ Send one message to the peer over the collab bus. Args: `$1` = peer (default
    breaks when focus is elsewhere), then take the peer of the right kind sharing
    your `tab_id`. Print `ME → PEER` before knocking. If no peer shares your tab,
    or more than one does, stop and ask.
-3. **Allocate the id with `next-id.sh`** (v0.5: a ULID, no lock). Never hand-craft an id or compute "highest + 1" — that counter race is exactly what the ULID rewrite removed:
+3. **Allocate a draft with `next-id.sh`** (v0.5: a ULID, no lock). Never hand-craft an id or compute "highest + 1" — that counter race is exactly what the ULID rewrite removed:
    ```bash
-   # Prefer the project's vendored copy: the peer CLI has no CLAUDE_PLUGIN_ROOT,
-   # so both sides must call the same entrypoint or they can drift apart.
-   ALLOC=collab/bin/next-id.sh
-   [ -x "$ALLOC" ] || ALLOC="${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh"
-   DEST=$("$ALLOC" <peer> <slug> <your-tab-id>)
+   # Prefer the project's vendored copies: the peer CLI has no CLAUDE_PLUGIN_ROOT,
+   # so both sides must call the same entrypoints or they can drift apart.
+   BIN=collab/bin; [ -x "$BIN/next-id.sh" ] || BIN="${CLAUDE_PLUGIN_ROOT}/scripts"
+   DRAFT=$("$BIN/next-id.sh" <peer> <slug> <your-tab-id>)   # a .md.part draft
    ```
-   It prints the path of a file it already reserved; write into that path.
-4. Write the message with PROTOCOL frontmatter (`pair: <your tab_id>` — required,
-   `from: claude`, `to: <peer>`, best-fit `type`, `subject`, `status: open`). Fill the
-   body from the user's intent: what you want, context/framing, acceptance/answer
+   It prints a **draft** path (`.<ULID>-…md.part`), not the final message; write into that path.
+4. Write the message into `$DRAFT` with PROTOCOL frontmatter (`pair: <your tab_id>` —
+   required, `from: claude`, `to: <peer>`, best-fit `type`, `subject`, `status: open`). Fill
+   the body from the user's intent: what you want, context/framing, acceptance/answer
    criteria. For reviews, point at the diff and give design intent — a cold diff yields
    a shallow review. One concern per message.
+   Then **publish** it (atomic rename to the final `.md`, so the peer never sees a
+   half-written file): `DEST=$("$BIN/publish.sh" "$DRAFT")` — publish.sh refuses an
+   empty draft, so only publish after the body is written.
 5. Knock (submit + wait): `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "<nudge>"`.
    Pass the **resolved pane_id**, not the kind name — with two agents of the same
    kind the name resolver refuses (by design). **Name the exact file in the nudge**;

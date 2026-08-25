@@ -21,7 +21,10 @@
 #
 # Usage:  next-id.sh <to> <slug> <tab>
 #   e.g.  next-id.sh codex review-auth w3:t3
-# Prints: the path of the created (empty) message file.
+# Prints: the path of a created (empty) DRAFT file. Write the message into that
+#         path, then `publish.sh <draft>` to atomically rename it into the inbox
+#         as the final <ULID>-…md. Until you publish, no .md exists — so a
+#         receiver scanning the inbox never sees a half-written message.
 #
 # Env: COLLAB_ROOT (default: ./collab).
 #      Sourcing with COLLAB_NEXT_ID_LIB=1 defines the id functions WITHOUT
@@ -99,14 +102,22 @@ fi
 COLLAB_ROOT="$(cd "$COLLAB_ROOT" && pwd -P)"
 
 ID="$(ulid)"
-DEST="$COLLAB_ROOT/inbox/to/$TO/${ID}-${TAB//:/}-${SLUG}.md"
-mkdir -p "$(dirname "$DEST")"
+DIR="$COLLAB_ROOT/inbox/to/$TO"
+BASE="${ID}-${TAB//:/}-${SLUG}.md"
+# v0.6: allocate a DRAFT, not the final message. The final <ULID>-…md must only
+# ever appear via an atomic rename (publish.sh) — otherwise a receiver scanning
+# the inbox can read the reserved-but-empty file before the sender fills it (the
+# empty-reply failure this project hit repeatedly). The draft name is dotfile +
+# .part so it is doubly excluded from message scans (ls hides it; it doesn't
+# match *.md).
+DRAFT="$DIR/.${BASE}.part"
+mkdir -p "$DIR"
 # Exclusive create: a ULID collision has negligible probability, but never
-# truncate an existing file — defense in depth WITHIN this filesystem view (it
+# truncate an existing draft — defense in depth WITHIN this filesystem view (it
 # cannot make a cross-machine synced create atomic), and it catches a same-named
 # file that arrived via folder sync.
-if ! ( set -o noclobber; : > "$DEST" ) 2>/dev/null; then
-  echo "error: $DEST already exists — refusing to overwrite" >&2
+if ! ( set -o noclobber; : > "$DRAFT" ) 2>/dev/null; then
+  echo "error: $DRAFT already exists — refusing to overwrite" >&2
   exit 1
 fi
-echo "$DEST"
+echo "$DRAFT"
