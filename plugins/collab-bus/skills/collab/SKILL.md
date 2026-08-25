@@ -16,9 +16,9 @@ The authoritative per-project contract is **`collab/PROTOCOL.md`** (written by
 `/collab-bus:init`). Read it if present; it wins over general guidance here —
 **with two carve-outs** that supersede any PROTOCOL.md predating them:
 
-1. The **multi-pair safety rules** below (atomic id allocation, `pair` routing,
-   resolve-the-peer-every-round). A file generated before v0.3.0 still says
-   "next id = highest + 1" — never follow that — and pins a static
+1. The **multi-pair safety rules** below (allocate ids via `next-id.sh`,
+   `pair` routing, resolve-the-peer-every-round). A file generated before v0.3.0
+   still says "next id = highest + 1" — never follow that — and pins a static
    `peer agent target: <pane_id>`; both are known to break once a second
    Claude+peer pair opens in the same repo.
 2. The **guarded transport rule**: *both* directions knock through the vendored
@@ -51,9 +51,8 @@ fresh template would silently discard.
 
 ## Running one round (write → knock → read → archive)
 
-1. **Write the message.** Allocate the id atomically.
-   Never compute "highest + 1" yourself: that races with a concurrent pair and
-   hands both of them the same number.
+1. **Write the message.** Allocate the id with `next-id.sh` (v0.5: it mints a
+   ULID — no coordination, no lock). Never hand-craft an id; never compute "highest + 1" — that counter race is what the ULID rewrite deleted.
 
    ```bash
    # Prefer the project's vendored copy — the peer CLI has no CLAUDE_PLUGIN_ROOT,
@@ -140,14 +139,16 @@ herdr is *agent-aware*, which removes every failure mode of raw tmux send-keys:
 Two independent failure modes appear as soon as a second Claude+peer pair opens in
 the same workspace:
 
-- **Id collisions.** Always use `scripts/next-id.sh`. It is an owner-aware
-  mkdir mutex: the lock records a `host:pid:rand` token, only the holder releases
-  it, a waiter that times out never touches it, and the destination is created
-  with `noclobber` so nothing is truncated. **Its guarantee is single-host only** —
-  `mkdir` is atomic within one filesystem namespace, so in a synced folder
-  (Dropbox/iCloud/Drive) two machines can each take the lock in their own local
-  view and allocate the same id. For cross-machine ids use a central allocator or
-  switch to UUID/ULID. Ids past 9999 fail loudly rather than silently repeating.
+- **Id collisions.** Always use `scripts/next-id.sh`. Since v0.5 it mints a
+  **ULID** (48-bit ms timestamp + 80 random bits, Crockford base32) — no shared
+  counter, so **no lock and nothing to coordinate**: two agents, even two
+  machines behind a synced folder, generate independently with a negligible
+  collision probability (80 random bits per millisecond).
+  This deleted the entire pre-v0.5 lock apparatus (mkdir mutex, owner tokens,
+  ghost-lock recovery, the `/tmp` path hardening) — a whole class of bugs went
+  with it. The destination is still created with `noclobber` as cheap defense in
+  depth. The one thing ULID does *not* give is strict cross-machine monotonicity
+  (clocks differ); if a flow ever needs that, use a central allocator.
 - **No real addressee.** `pair` prevents *accidents*, not access — every agent in a
   shared workspace can read and write every inbox, so it is not a security
   boundary. `inbox/to/<peer>/` says *which kind*, not *which one*, and

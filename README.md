@@ -65,6 +65,10 @@ bundled `collab` skill drives the write → knock → read → archive loop.
   `herdr agent prompt <pane_id> "<nudge>" --wait` — the blessed herdr CLI pattern;
   prefer `prompt` over `send-keys`.
 - **Bus**: `collab/inbox/to/{claude,<peer>}` + `archive/`; one markdown message per file.
+- **Message ids**: `scripts/next-id.sh` mints a **ULID** (v0.5) — time-ordered,
+  collision-resistant, and generated with no coordination. There is no shared
+  counter and therefore no lock; two agents (even across a synced folder) allocate
+  independently with a negligible collision probability.
 - **Protocol**: `collab/PROTOCOL.md` (written by `init`) is the per-project contract.
 
 ## When to use this vs a review plugin
@@ -80,6 +84,7 @@ plugins/collab-bus/
 ├── .claude-plugin/plugin.json
 ├── skills/collab/SKILL.md          # the orchestration workflow
 ├── commands/{init,send,status}.md  # /collab-bus:* commands
+├── scripts/next-id.sh              # allocate a message: mint a ULID + create the file
 ├── scripts/knock.sh                # herdr transport: agent prompt --wait
 └── templates/PROTOCOL.template.md  # per-project protocol, filled by init
 ```

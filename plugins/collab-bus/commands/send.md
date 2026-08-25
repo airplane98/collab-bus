@@ -14,8 +14,7 @@ Send one message to the peer over the collab bus. Args: `$1` = peer (default
    breaks when focus is elsewhere), then take the peer of the right kind sharing
    your `tab_id`. Print `ME → PEER` before knocking. If no peer shares your tab,
    or more than one does, stop and ask.
-3. **Allocate the id atomically** — never compute "highest + 1" yourself, that races
-   with a concurrent pair and hands both the same number:
+3. **Allocate the id with `next-id.sh`** (v0.5: a ULID, no lock). Never hand-craft an id or compute "highest + 1" — that counter race is exactly what the ULID rewrite removed:
    ```bash
    # Prefer the project's vendored copy: the peer CLI has no CLAUDE_PLUGIN_ROOT,
    # so both sides must call the same entrypoint or they can drift apart.

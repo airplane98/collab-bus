@@ -29,12 +29,11 @@ collab/
 ## 訊息格式
 
 一則訊息 = `inbox/to/<recipient>/` 下一個 markdown 檔。
-**檔名**：`NNNN-<tab>-<slug>.md`，例：`0034-w3t3-review-auth.md`。
+**檔名**：`<ULID>-<tab>-<slug>.md`，例：`01M0WG3WJF6AX39B2RGCPVN2CM-w3t3-review-auth.md`。
 
-> **編號必須用 `collab/bin/next-id.sh` 原子性配號**（雙方共用同一入口）。
->
-> 「下一個 id = 現有最大 NNNN + 1」是 read-then-write，**兩個 session 同時算就會撞號**
-> （實際發生過：同一個收件匣出現兩則 `0033`）。
+> **編號必須用 `collab/bin/next-id.sh` 產生**（雙方共用同一入口）。**絕不要自己
+> 手算 id**，尤其不要「現有最大 + 1」——那是 read-then-write 競態，兩個 session
+> 同時算就撞號（v0.4 之前實際發生過：同一收件匣出現兩則 `0033`）。
 >
 > ```bash
 > # 雙方都用專案內的同一個入口（peer CLI 沒有 CLAUDE_PLUGIN_ROOT）
@@ -42,36 +41,24 @@ collab/
 > # 然後把內容寫進 $DEST
 > ```
 >
-> 它用 `mkdir` 當互斥鎖（POSIX 原子操作），在鎖內算號並以 **exclusive create** 佔位再放鎖。
-> 鎖內記錄 owner token（`host:pid:rand`），**只有持鎖者本人能釋放**；逾時等待者絕不碰別人的鎖。
+> **v0.5 起 id 是 ULID**（48-bit 毫秒時間戳 + 80 隨機位元，Crockford base32，
+> 26 字元），**不再是共享計數器，因此沒有鎖**。ULID 不需要任何協調就唯一：兩個
+> agent——甚至同步資料夾後的兩台機器——各自獨立產生，撞號機率可忽略（每毫秒 80
+> 隨機位元），因為沒有共享可變狀態可爭。v0.2–v0.4.1 為了那個計數器建的整套
+> mkdir 互斥鎖、owner token、鬼鎖復原、
+> `/tmp` 鎖路徑導出全部**已刪除**。時間戳是高位前綴，所以檔名仍照時間排序；tab 與
+> slug 仍在後面，人類照樣讀得懂。
 >
-> **v0.3.2 起沒有自動 stale 接管**：鎖卡住會明確報錯並列出持有者（含該 PID 是否還活著），
-> 由人判斷後手動清除。原因是 portable shell 對固定路徑做不到 compare-and-rename，
-> 任何「檢查後再 rename」都有換代競態，可能移走別人正持有的鎖；
-> `mkdir` 成功到寫入 token 之間也有一段無主視窗。要自動恢復必須改用 process 死亡即釋放的
-> OS 鎖（flock/fcntl），或不重用同一路徑的 ticket 設計。
+> **仍保留的防覆寫**：`next-id.sh` 用 exclusive create（`noclobber`）建空檔——
+> ULID 撞號機率是天文級小，但這一層零成本，也順手擋掉同步而來的同名檔。
 >
-> **v0.3.7：釋放失敗時鎖必須保持「有主」。** owner 檔在鎖目錄「裡面」，所以得先刪它、
-> `rmdir` 才會成功；但只要 `rmdir` 失敗一次（同步守護程序的暫存檔、`.DS_Store`、慢速掛載），
-> 鎖就會以**無主**狀態殘留——而既然沒有自動接管，無主鎖等於**沒有人工介入就無法恢復**，
-> 且會擋掉之後所有配號。實際發生過（2026-08-24，卡住一輪複查）。
-> 現在 `release()` 會重試 `rmdir`；仍失敗就**把 owner token 寫回去**，
-> 讓 `describe_lock()` 至少報得出持有者。回歸測試見 `tests/test_next_id_release.sh`
-> （以 `COLLAB_NEXT_ID_LIB=1` source 真正的 `release()`，不是另寫一份等價邏輯）。
->
-> **防覆寫的責任分工**：同機競態由 exclusive create（`noclobber`）擋；
-> 檔名帶 tab **只增加可追溯性**，不是第二把鎖。
->
-> ⚠️ **保證範圍：同一台機器、同一個本地目錄 view 的並行 process。**
-> `mkdir` 的原子性只存在於單一 filesystem namespace。放在 Dropbox／iCloud／Drive 這類
-> **同步資料夾時，兩台機器各自都能在自己的本地 view 建立 `.idlock`、讀到相同 MAX、
-> 配出相同編號**——同步層之後只會產生 conflicted copy，不會幫你解決競爭。
-> 需要跨機器單調編號請改用中央 allocator；不需要單調序號則改用 UUID/ULID。
-> 編號到 `9999` 會明確失敗，不會靜默重用。
+> ⚠️ **跨機器仍非嚴格單調。** ULID 保證唯一，但兩台機器時鐘不完全同步時，時間
+> 排序只精確到毫秒級；若某流程需要跨機器**嚴格單調**序號，ULID（和舊計數器一樣）
+> 都不提供，得用中央 allocator。日常協作用不到這個。
 
 ```markdown
 ---
-id: 0001
+id: 01M0WG3WJF6AX39B2RGCPVN2CM   # next-id.sh 產生的 ULID（就是檔名前綴）
 pair: w3:t3             # 必填：發訊方的 herdr tab_id（多組並存時用來路由，見下）
 from: claude            # claude | {{PEER}}
 to: {{PEER}}            # {{PEER}} | claude
@@ -86,7 +73,7 @@ status: open            # open | done
 
 ## 收發流程（一輪）
 
-1. **寫**：發訊方在 `inbox/to/<對方>/` 建 `NNNN-*.md`，`status: open`。
+1. **寫**：發訊方用 `next-id.sh` 在 `inbox/to/<對方>/` 建訊息檔，`status: open`。
 2. **敲門（先等，再送+等）**：先依「herdr 座標」那節**動態解析出對方的 pane_id**，
    再跑 `collab/bin/knock.sh <對方_pane_id> "<一句話，並指名檔案路徑>"`（雙方共用
    這一個入口，方向相反也一樣）。
@@ -106,8 +93,8 @@ status: open            # open | done
    **不要**直接重敲（會重複下指令）。
    `blocked`（或提交前就被拒的 `agent_blocked`）就喊人類；
    `herdr agent read <peer_pane_id>` 可看它卡在哪個確認畫面。
-4. **回覆**：收訊方在 `inbox/to/<發訊方>/` 建新 `NNNN-*.md`（`reply_to` 指回原 id），
-   把**原訊息**搬到 `inbox/archive/`，換手敲門回去。
+4. **回覆**：收訊方用 `next-id.sh` 在 `inbox/to/<發訊方>/` 建新訊息檔（`reply_to`
+   指回原 id），把**原訊息**搬到 `inbox/archive/`，換手敲門回去。
 
 ## 硬規則（避免互相踩）
 
@@ -122,7 +109,8 @@ status: open            # open | done
 
 工作區可能同時開著好幾組（一個 tab 一組）。這帶來兩個獨立問題：
 
-**問題一：編號會撞。** 解法見上面的 `next-id.sh` 原子配號。
+**問題一：編號會撞。** v0.5 起用 ULID（`next-id.sh` 產生），無需協調即唯一，
+這個問題結構上消失——不再有共享計數器可爭。
 
 **問題二：收件匣是共用的，訊息沒有真正的收件人。**
 `inbox/to/{{PEER}}/` 只說「給 {{PEER}}」，沒說給**哪一個**。兩組的 peer 都會讀到同一個目錄。

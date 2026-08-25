@@ -91,6 +91,11 @@ run_lint() {
   # without a backtick/$ in between while letting "up to ~2x `COLLAB..." pass.
   check "no single-timeout claim for the knock" \
         'up to .{0,2}COLLAB_WAIT_MS' "${DOCS[@]}"
+  # v0.4.1 moved the id lock out of the synced tree (sync engines resurrect a
+  # released in-tree lock as an ownerless ghost). Docs must not send anyone
+  # looking for — or cleaning up — a lock at collab/.idlock again.
+  check "no in-tree idlock references" \
+        'collab/\.idlock' "${DOCS[@]}"
   return $fail
 }
 
@@ -170,6 +175,7 @@ self_test() {
 no atomic-transport claims|skills/collab/SKILL.md|The transport is an atomic submit+wait, so nothing can interleave.
 no bare reverse agent-prompt knock|templates/PROTOCOL.template.md|- {{PEER}} knocks back with `herdr agent prompt <claude_pane_id> "..." --wait`.
 no single-timeout claim for the knock|skills/collab/SKILL.md|The knock blocks for up to `COLLAB_WAIT_MS` in total.
+no in-tree idlock references|templates/PROTOCOL.template.md|鎖目錄是 collab/.idlock，owner 檔在其中。
 CASES
 
   # --- 4. The real tree must be clean.
