@@ -14,27 +14,47 @@ No tmux, no send-keys, no polling.
 
 The authoritative per-project contract is **`collab/PROTOCOL.md`** (written by
 `/collab-bus:init`). Read it if present; it wins over general guidance here —
-**with two carve-outs** that supersede any PROTOCOL.md predating them:
+**with four carve-outs** that supersede any PROTOCOL.md predating them:
 
-1. The **multi-pair safety rules** below (allocate ids via `next-id.sh`,
+1. The **trust-anchor rule** (v0.8): before executing anything from `collab/bin/`,
+   run `preflight.sh` from code the caller already trusts and use only the `$BIN` it
+   returns. Claude Code's anchor is the installed plugin; a peer's anchor is its own
+   clone/install outside the project, supplied by provider-local configuration — never
+   a path read from this project. A PROTOCOL.md predating this rule directly invokes
+   project scripts, but migrate deliberately does not rewrite it; those invocations are
+   stale and this carve-out supersedes them.
+2. The **multi-pair safety rules** below (allocate ids via `next-id.sh`,
    `pair` routing, resolve-the-peer-every-round). A file generated before v0.3.0
    still says "next id = highest + 1" — never follow that — and pins a static
    `peer agent target: <pane_id>`; both are known to break once a second
    Claude+peer pair opens in the same repo.
-2. The **guarded transport rule**: *both* directions knock through the vendored
-   `collab/bin/knock.sh` (pre-settle + prompt), never a bare
+3. The **guarded transport rule**: *both* directions knock through the certified
+   `$BIN/knock.sh` (pre-settle + prompt), never a bare
    `herdr agent prompt ... --wait`. A file generated before v0.4.0 still tells
    the peer to bare-prompt Claude back, and the project has no (or a pre-0.4)
    `collab/bin/knock.sh` — so the turn race this version closes survives in the
    peer → Claude direction until the project is migrated.
+4. The **addressing rule** (v0.8): messages are addressed to a **participant id**
+   (`to_agent`), and the inbox is drained with the certified `$BIN/route.sh list` — not by
+   globbing `*.md` and comparing `pair`, which addresses a *tab* and therefore
+   matches every message once two participants of one kind share it. A PROTOCOL.md
+   predating v0.8 states the tab rule as the whole story; it is now the **fallback**
+   for legacy messages only. This carve-out applies even though the project's
+   PROTOCOL.md otherwise wins: `bootstrap.sh` never rewrites that file, so it cannot
+   have been updated by the migration that vendored the new `collab/bin/`.
 
 **Migrating a stale project** (do this before the first round, with the human's
-OK): re-vendor `collab/bin/` from the plugin
-(`mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
-— the `mkdir -p` matters: a v0.2 project has `collab/` but no `collab/bin/` yet)
-and patch the PROTOCOL.md sections the carve-outs cover — the id-allocation
-text, the pair-routing text, and every line that has an agent bare-prompt the
-other side. **Patch those sections in place; never regenerate the whole file** —
+OK): re-run the bootstrap, which re-vendors the whole of `collab/bin/` and leaves
+PROTOCOL.md and every message untouched:
+`bash "${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap.sh" <peer>`.
+Copying two scripts by hand is no longer enough — routing needs `route.sh`,
+`participant.sh` and `lib/`, and a partial `collab/bin/` is worse than an old one
+because the pieces disagree. After it runs, each agent registers and binds its own
+participant (`participant.sh register <id> --kind <k>`, then `bind <id>` from that
+agent's own pane), and you patch the PROTOCOL.md sections the carve-outs cover — the
+trust-anchor setup and every direct project-bin invocation, the id-allocation text, the
+pair-routing text, and every line that has an agent bare-prompt the other side. **Patch
+those sections in place; never regenerate the whole file** —
 an existing PROTOCOL.md usually carries project-specific customizations that a
 fresh template would silently discard.
 
@@ -47,7 +67,20 @@ fresh template would silently discard.
   `agent`/`name`/`pane_id` identifies the peer (e.g. Codex). herdr auto-detects ~20
   agent kinds; a peer showing `agent_status: unknown` isn't detected — see `/collab-bus:init`.
 - `collab/` exists in the project (else run `/collab-bus:init [peer]`).
-- The knock script is `${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh`.
+- **Establish the trust anchor from provider-local state, before any project script.**
+  Claude Code sets `COLLAB_BUS_TRUSTED_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/scripts"`.
+  A peer CLI sets the same variable in its own local configuration to the absolute
+  `plugins/collab-bus/scripts` path in its clone/install **outside this project**; it
+  must never discover or source that value from `collab/`, PROTOCOL.md, or another
+  project file. Then, from the project root, run:
+
+  ```bash
+  : "${COLLAB_BUS_TRUSTED_SCRIPTS:?set it from this provider's trusted install/clone}"
+  PROJECT_ROOT="$(pwd -P)"
+  BIN=$("$COLLAB_BUS_TRUSTED_SCRIPTS/preflight.sh" --dir "$PROJECT_ROOT") || exit 1
+  ```
+
+  The returned `$BIN` is the only project runtime used for the rest of the round.
 
 ## Running one round (write → publish → knock → read → archive)
 
@@ -56,9 +89,8 @@ fresh template would silently discard.
    race is what the ULID rewrite deleted.
 
    ```bash
-   # Prefer the project's vendored copies — the peer CLI has no CLAUDE_PLUGIN_ROOT,
-   # so both sides must call one entrypoint or they drift apart.
-   BIN=collab/bin; [ -x "$BIN/next-id.sh" ] || BIN="${CLAUDE_PLUGIN_ROOT}/scripts"
+   # BIN came from the trusted preflight in Prerequisites; never select it from one
+   # project sentinel, because -x follows a symlink and a half bin can still pass.
    DRAFT=$("$BIN/next-id.sh" <peer> <slug> <my-tab-id>)   # a .md.part draft
    #   …write the full message into $DRAFT…
    DEST=$("$BIN/publish.sh" "$DRAFT")                     # atomic rename -> final .md
@@ -67,9 +99,38 @@ fresh template would silently discard.
    `next-id.sh` returns a **draft** path (`.<ULID>-…md.part`), not the final
    message — the final `<ULID>-…md` must only appear via `publish.sh`'s atomic
    rename, so the peer never reads a reserved-but-empty file. Write the whole
-   message into `$DRAFT` first (PROTOCOL frontmatter: `pair: <my tab_id>`,
-   `from: claude`, `to: <peer>`, precise `type`, `status: open`), **then publish** —
-   `publish.sh` refuses an empty draft, so never publish before writing the body.
+   message into `$DRAFT` first, **then publish** — `publish.sh` refuses an empty
+   draft, so never publish before writing the body.
+
+   **Address the participant, not the tab.** A tab is a locator: the moment two
+   participants of the same kind share one, `pair` matches both and every message
+   is ambiguous. A new message therefore carries `to_agent` / `from_agent` —
+   stable participant ids, which is what routing matches — and **still** carries
+   `pair` and `status: open`, because those are what a reader that started
+   yesterday drains on. Dropping them is a separate, deliberate migration;
+   `route.sh capability` says whether it is licensed yet, and today it is not.
+
+   ```yaml
+   ---
+   schema: 2
+   id: 01M0…                    # the ULID next-id.sh minted; also the filename prefix
+   thread: 01M0…                # the conversation; a first message uses its own id
+   reply_to: 01M0…              # omit on the first message of a thread
+   from: claude                 # kind — also the inbox/to/ directory
+   to: codex
+   from_agent: claude-primary   # stable participant ids: routing matches these exactly
+   to_agent: codex-primary
+   intent: action               # action | fyi — what you want, not lifecycle
+   type: review-request
+   subject: 'single-quoted; interior '' doubled; never a newline'
+   status: open                 # legacy, still written
+   pair: w3:t6                  # legacy, still written
+   ---
+   ```
+
+   `outcome:` (`done|rejected|failed|canceled`) belongs only on a recipient's
+   **terminal reply** — never on a question or an update, which is what keeps
+   "is this handled?" answerable at all.
 
    **Quote the human fields; leave the machine fields bare.** `subject` and `refs` (and
    later `note`/`alias`) are text you compose — single-quote them. `id`, `from`, `to`,
@@ -85,7 +146,7 @@ fresh template would silently discard.
    files) and give your framing / design intent — a cold diff yields a shallow review.
 
 2. **Knock (pre-settle, then submit + wait).** Run:
-   `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "<nudge naming the exact file>"`
+   `"$BIN/knock.sh" <peer-pane-id> "<nudge naming the exact file>"`
    Pass the pane_id you resolved this round, not the kind name, and name the file —
    "the newest open message" misroutes as soon as another pair has one.
    This first settles any in-flight peer turn (`agent wait` — herdr's `prompt --wait`
@@ -151,9 +212,17 @@ The fix is to split "send" and "receive" so both are asynchronous:
   best-effort wakeup (and herdr's turn boundaries are fuzzy — you cannot detect a queued
   message by watching for a new `working` turn), **the durable inbox file is the source
   of truth**. So at the *start* of any collab round — before doing new work — drain your
-  own inbox: process every `inbox/to/claude/*.md` whose `pair` matches your tab and whose
-  `status` is `open`. This is turn-start reconciliation, not background polling: a lost or
-  late nudge is recovered because the message file is still there.
+  own inbox with `"$BIN/route.sh" list` (add `--agent <your participant id>` if this
+  session is not bound yet). It prints the messages addressed to **you**, oldest first;
+  `route.sh explain <file>` shows why any one file did or did not make the list. This is
+  turn-start reconciliation, not background polling: a lost or late nudge is recovered
+  because the message file is still there.
+  Read the rule off the tool, not off a glob: matching `*.md` by `pair` addresses a tab,
+  so two participants of one kind in the same tab both match everything. `route.sh` uses
+  `to_agent` when the message has one and falls back to `pair` only for legacy messages —
+  which are already published, therefore unupgradable. A file it calls **unrouted** or
+  **unreadable** is named on stderr and left in place: it is never silently claimed, and
+  never silently dropped.
 - **At-least-once, idempotent**: a message can be processed more than once. The sharpest
   reason is a crash window, not the double discovery path: if you finish a message's side
   effects but are interrupted **before** archiving it, the next round still sees the same
@@ -203,13 +272,13 @@ the same workspace:
   with it. The destination is still created with `noclobber` as cheap defense in
   depth. The one thing ULID does *not* give is strict cross-machine monotonicity
   (clocks differ); if a flow ever needs that, use a central allocator.
-- **No real addressee.** `pair` prevents *accidents*, not access — every agent in a
+- **No real addressee.** Routing prevents *accidents*, not access — every agent in a
   shared workspace can read and write every inbox, so it is not a security
-  boundary. `inbox/to/<peer>/` says *which kind*, not *which one*, and
-  both peers read the same directory. Stamp `pair: <tab_id>` in the frontmatter,
-  process only messages whose `pair` matches your own tab, and leave the rest
-  untouched (they belong to the other pair). Name the file in the knock nudge
-  rather than saying "check the inbox".
+  boundary. `inbox/to/<peer>/` says *which kind*, not *which one*, and every peer of
+  that kind reads the same directory. Address the participant (`to_agent`), keep
+  stamping `pair` for legacy readers, and take your queue from `route.sh list`,
+  leaving the rest untouched. Name the file in the knock nudge rather than saying
+  "check the inbox".
 
 ## Resolving the peer (do this every round)
 

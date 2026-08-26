@@ -472,6 +472,10 @@ usage() {
   echo "       participant.sh bind <id> [--takeover]" >&2
   echo "       participant.sh ensure <id>" >&2
   echo "       participant.sh validate <id> [--kind <kind>]   (read-only)" >&2
+  echo "       participant.sh get <id> <field>                (read-only)" >&2
+  echo "       participant.sh snapshot <id>                  (read-only, tab-separated:" >&2
+  echo "                    reader_schema  liveness  pane_id  tab_id  agent_session)" >&2
+  echo "       participant.sh whoami                          (read-only)" >&2
   echo "       participant.sh show [<id>]" >&2
 }
 
@@ -617,6 +621,112 @@ case "$CMD" in
       esac
     done
     participant_load "$ID" "$WANT" >/dev/null || exit 1
+    ;;
+
+  get)
+    # A machine-readable accessor, so a consumer never has to scrape `show`. Everything
+    # printed here has been through the whole-file codec first: the step-2 rule that a
+    # per-key search launders corruption applies to READERS just as much as to writers,
+    # and routing is about to become a reader.
+    ID="${1:-}"; FIELD="${2:-}"; shift 2 2>/dev/null || true
+    [ "$#" -eq 0 ] || { _p_err "get takes exactly two arguments"; usage; exit 2; }
+    { [ -n "$ID" ] && [ -n "$FIELD" ]; } || { _p_err "get needs <id> and <field>"; usage; exit 2; }
+    participant_load "$ID" >/dev/null || exit 1
+    case "$FIELD" in
+      kind)    printf '%s\n' "$P_KIND" ;;
+      alias)   printf '%s\n' "$P_ALIAS" ;;
+      created) printf '%s\n' "$P_CREATED" ;;
+      pane_id|tab_id|agent_session|reader_schema|claim_mode|claimed_from|bound_at|live)
+        [ -L "$BDIR" ] && { _p_err "$BDIR is a symlink — refusing"; exit 1; }
+        BF="$BDIR/$ID.json"
+        [ -L "$BF" ] && { _p_err "$BF is a symlink — refusing"; exit 1; }
+        [ -f "$BF" ] || { _p_err "$ID has no binding — run: participant.sh bind $ID"; exit 1; }
+        # rc 3 ("recorded by newer tooling") is passed through rather than flattened: a
+        # caller that must not act on a binding it cannot fully read needs to tell that
+        # apart from a corrupt file.
+        r=0; binding_read "$BF" >/dev/null || r=$?
+        [ "$r" = 0 ] || exit "$r"
+        [ "$P_ID" = "$ID" ] || { _p_err "$BF binds '$P_ID', not '$ID'"; exit 1; }
+        case "$FIELD" in
+          pane_id)       printf '%s\n' "$B_PANE" ;;
+          tab_id)        printf '%s\n' "$B_TAB" ;;
+          agent_session) printf '%s\n' "$B_SESSION" ;;
+          reader_schema) printf '%s\n' "$B_READER" ;;
+          claim_mode)    printf '%s\n' "$B_CLAIM" ;;
+          claimed_from)  printf '%s\n' "$B_FROM" ;;
+          bound_at)      printf '%s\n' "$B_AT" ;;
+          # THREE states. A binding file is the record of the last claim, not proof that
+          # the process is still there, and callers that treat "a file exists" as "a live
+          # reader" (capability did) end up licensing decisions on a session that ended.
+          live)          printf '%s\n' "$(session_liveness "$B_SESSION")" ;;
+        esac ;;
+      *) _p_err "unknown field '$FIELD'"; exit 2 ;;
+    esac
+    ;;
+
+  snapshot)
+    # ONE decode, one answer, for EVERY fact a caller might otherwise splice. Two `get`
+    # calls are two processes that each re-read a mutable binding, so a rebind between
+    # them joins one holder's liveness to another holder's schema — or to another
+    # holder's pane, which is the same bug wearing transport clothes. Liveness here is
+    # asked about the session THIS decode saw, so if that holder has since been replaced
+    # the honest answer is that it is gone.
+    #
+    # OUTPUT CONTRACT — one line, tab-separated, fixed order, appended to only at the end:
+    #   reader_schema  liveness  pane_id  tab_id  agent_session
+    ID="${1:-}"; shift || true
+    [ "$#" -eq 0 ] || { _p_err "snapshot takes exactly one argument"; usage; exit 2; }
+    [ -n "$ID" ] || { _p_err "snapshot needs <id>"; usage; exit 2; }
+    participant_load "$ID" >/dev/null || exit 1
+    [ -L "$BDIR" ] && { _p_err "$BDIR is a symlink — refusing"; exit 1; }
+    BF="$BDIR/$ID.json"
+    [ -L "$BF" ] && { _p_err "$BF is a symlink — refusing"; exit 1; }
+    [ -f "$BF" ] || { _p_err "$ID has no binding — run: participant.sh bind $ID"; exit 1; }
+    r=0; binding_read "$BF" >/dev/null || r=$?
+    [ "$r" = 0 ] || exit "$r"
+    [ "$P_ID" = "$ID" ] || { _p_err "$BF binds '$P_ID', not '$ID'"; exit 1; }
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$B_READER" "$(session_liveness "$B_SESSION")" "$B_PANE" "$B_TAB" "$B_SESSION"
+    ;;
+
+  whoami)
+    # The INVERSE lookup, and the distinction matters. Deriving an ADDRESS from live state
+    # is what made `<kind>-<tab>` a locator; asking "which identity did I already claim?"
+    # reads a binding somebody deliberately created, and the live session is only the key.
+    resolve_live || exit 1
+    [ -L "$BDIR" ] && { _p_err "$BDIR is a symlink — refusing"; exit 1; }
+    [ -d "$BDIR" ] || { _p_err "no bindings yet — run: participant.sh bind <id>"; exit 1; }
+    hits=""; n=0; broken=0
+    for f in "$BDIR"/*.json; do
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      # Same artifact gate `get` and `show` apply. A symlinked or non-regular binding is
+      # not a binding that is merely absent: reading through one lets a file outside the
+      # project answer "which identity am I?".
+      [ -L "$f" ] && { _p_err "$f is a symlink — refusing"; broken=1; continue; }
+      [ -f "$f" ] || { _p_err "$f is not a regular file — refusing"; broken=1; continue; }
+      # A binding we cannot read is NOT a binding that is not ours. Skipping it quietly
+      # would answer "nobody" for a session whose own record is the corrupt one.
+      r=0; binding_read "$f" >/dev/null || r=$?
+      [ "$r" = 0 ] || { broken=1; continue; }
+      base="$(basename "$f")"; base="${base%.json}"
+      [ "$P_ID" = "$base" ] || { broken=1; continue; }
+      # An orphan binding — no identity behind it — cannot be the answer either: the
+      # identity is the durable half, and a claim on something unregistered is not one.
+      # `[ -f ]` was not that check: it follows a symlink and reads nothing, so a symlinked
+      # or corrupt identity still counted as "an identity is behind this". The invariant
+      # lives in participant_load (id vs filename vs content, kind, parent symlink), and
+      # every reader has to go through it or it is not an invariant.
+      participant_load "$base" >/dev/null || { broken=1; continue; }
+      [ "$B_SESSION" = "$LIVE_SESSION" ] || continue
+      hits="$hits $base"; n=$((n+1))
+    done
+    [ "$broken" = 0 ] || { _p_err "one or more bindings are unreadable — refusing to guess which identity is mine"; exit 1; }
+    case "$n" in
+      1) printf '%s\n' "${hits# }" ;;
+      0) _p_err "no participant is bound to this session ($LIVE_SESSION) — run: participant.sh bind <id>"; exit 1 ;;
+      *) _p_err "session $LIVE_SESSION holds more than one participant:${hits}"
+         _p_err "that is a duplicate claim, not something to pick a winner from"; exit 1 ;;
+    esac
     ;;
 
   show)

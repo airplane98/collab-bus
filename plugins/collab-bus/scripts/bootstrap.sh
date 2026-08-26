@@ -44,7 +44,11 @@ MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
 # publish.sh REQUIRES lib/envelope.sh — vendoring the script without its gate would
 # leave a bus that silently accepts unvalidated messages, so the library and the two
 # envelope CLIs ship together with the rest. Entries may contain a directory component.
-VENDOR=(next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh lib/envelope.sh lib/manifest.sh)
+# What gets vendored comes from the shared inventory, so the writer and the checker
+# cannot disagree about what a complete bin is (lib/inventory.sh).
+. "$SELF/lib/inventory.sh"
+# shellcheck disable=SC2206
+VENDOR=($COLLAB_BINS $COLLAB_LIBS)
 
 usage() { echo "usage: bootstrap.sh [peer] [--dir <project>]   (peer defaults to codex)" >&2; }
 
@@ -115,7 +119,7 @@ BUSJSON="$COLLAB/bus.json"
 . "$SELF/lib/manifest.sh"
 . "$SELF/lib/envelope.sh"          # _env_has_control, for rejecting a control byte in the alias
 BUS_SCHEMAS_READ='1, 2'
-BUS_SCHEMAS_WRITE=1                # step 1 shipped the reader; writers still emit schema 1
+BUS_SCHEMAS_WRITE=2                # step 4: writers emit schema 2, legacy pair + status kept
 BUS_SCHEMAS_MIN_READER=1
 # Bind the codec's notion of "what this tooling supports" to THIS binary, unconditionally.
 # manifest.sh keeps an env-overridable default so the library stays testable, but a

@@ -30,7 +30,10 @@ MANIFEST_SCHEMA_LATEST=1
 MF_TOOLING_READ="${MF_TOOLING_READ:-1,2}"
 # What this tooling could have WRITTEN. A recorded value outside this set did not come
 # from us, so resetting it would be a downgrade rather than a canonicalization.
-MF_TOOLING_WRITE="${MF_TOOLING_WRITE:-1}"
+# Raised to 2 in step 4, when the writer guidance and the routing tool began emitting and
+# matching schema 2. A default that UNDER-describes the build is not the safe side of this
+# trade: it made this build refuse its own freshly written manifest as "from newer tooling".
+MF_TOOLING_WRITE="${MF_TOOLING_WRITE:-2}"
 
 # Parsed results (set by manifest_read_strict)
 MF_PROJECT_ID=""; MF_PROJECT_ALIAS=""; MF_MIN_READER=""

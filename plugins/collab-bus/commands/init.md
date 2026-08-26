@@ -26,8 +26,14 @@ agent, the onboarding message, and the handshake.
 
 3. **Scaffold (or migrate) the bus — one command:**
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap.sh" <PEER>
+   COLLAB_BUS_TRUSTED_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/scripts"
+   PROJECT_ROOT="$(pwd -P)"
+   "$COLLAB_BUS_TRUSTED_SCRIPTS/bootstrap.sh" <PEER> || exit 1
+   BIN=$("$COLLAB_BUS_TRUSTED_SCRIPTS/preflight.sh" --dir "$PROJECT_ROOT") || exit 1
    ```
+   Bootstrap and preflight both come from the installed plugin, never from the project
+   tree they are creating or vetting. Every later project runtime in this command uses
+   the returned `$BIN`.
    **Its output tells you which of two paths you are on — they do not continue the same
    way.** Read it before doing anything else.
 
@@ -77,22 +83,24 @@ agent, the onboarding message, and the handshake.
      pairs' peers to the same bare `<PEER>` would defeat the point).
 
 5. **Write the onboarding message** via the allocator (never a hardcoded `0001`):
-   `DRAFT=$(collab/bin/next-id.sh <PEER> onboarding <your-tab-id>)` → write the body
+   `DRAFT=$("$BIN/next-id.sh" <PEER> onboarding <your-tab-id>)` → write the body
    into `$DRAFT` with `pair: <your tab_id>` in the frontmatter → publish it
-   `DEST=$(collab/bin/publish.sh "$DRAFT")`. The inbox may not be empty, so do not
+   `DEST=$("$BIN/publish.sh" "$DRAFT")`. The inbox may not be empty, so do not
    assume any particular number — and do not tell the peer to reply with a specific
    id either; ask it to allocate its own and reply with `reply_to: <your id>`
    (frontmatter per PROTOCOL, `type: task`, `status: open`) instructing the peer to:
-   read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; confirm the role
-   it is taking this round; then reply into `collab/inbox/to/claude/` using **its own
-   next-id.sh + publish.sh** (never a fixed number, and publish so its reply is
+   read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; configure
+   `COLLAB_BUS_TRUSTED_SCRIPTS` in provider-local state to its own clone/install outside
+   the project, run that trusted `preflight.sh --dir <project>`, and confirm the role it
+   is taking this round; then reply into `collab/inbox/to/claude/` using **only the
+   `$BIN` returned by that preflight** (never a fixed number, and publish so its reply is
    never read half-written) with `reply_to: <the onboarding id you just got>`
    and `pair: <your tab_id>` — its stack summary + whether it can run git/tests —
    and archive the onboarding message.
 
 6. **Kick off the handshake** (only if the peer agent is already detected): knock the
    **pane_id resolved in step 4** and name the **actual file** written in step 5 —
-   `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "Handshake: process $DEST"` —
+   `"$BIN/knock.sh" <peer-pane-id> "Handshake: process $DEST"` —
    which submits and waits for the peer's turn. Then find the reply by matching
    `pair` + `reply_to`, never by guessing a file number, and archive per PROTOCOL.
    If the peer isn't wired yet, tell the human the one step (run the peer in a herdr pane)

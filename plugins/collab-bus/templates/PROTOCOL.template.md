@@ -6,9 +6,34 @@
 
 兩個 AI CLI（Claude Code + {{PEER}}）共享這個 repo。**訊息內容 + 審計軌跡**走檔案
 （`collab/inbox/`）；**傳輸與「對方跑完沒」**走 **herdr**——**雙方敲門都用
-`collab/bin/knock.sh`**（先 `agent wait` 把對方進行中的一輪等完，再 `agent prompt
+trusted preflight 回傳的 `$BIN/knock.sh`**（先 `agent wait` 把對方進行中的一輪等完，再 `agent prompt
 --wait` 提交並等 settle；靠語義狀態，不輪詢、不 send-keys）。
 這份檔是雙方唯一的共同約定，衝突時以此為準。
+
+## Trust anchor（每一輪、任何 project code 之前）
+
+`collab/bin/` 是待驗目標，不能用它自己的程式判斷自己是否可信：若其中一個 executable
+是 symlink，等它自己說「拒絕 symlink」時 target 早已執行。每一方都要從**專案外、由該
+provider 本來就信任的安裝／clone**提供 preflight：
+
+- Claude Code：provider-local 值是
+  `COLLAB_BUS_TRUSTED_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/scripts"`。
+- {{PEER}}：在它自己的 shell／agent 設定裡，將 `COLLAB_BUS_TRUSTED_SCRIPTS` 設成其
+  **own clone/install** 的絕對路徑，例如
+  `/absolute/path/to/collab-bus/plugins/collab-bus/scripts`。這個值不可從本 repo、
+  `collab/` 或本 PROTOCOL 讀入；未設定就停下來請人類提供，不可猜。
+
+從 project root 開始每一輪：
+
+```bash
+: "${COLLAB_BUS_TRUSTED_SCRIPTS:?set it in provider-local config to a trusted collab-bus clone/install}"
+PROJECT_ROOT="$(pwd -P)"
+BIN=$("$COLLAB_BUS_TRUSTED_SCRIPTS/preflight.sh" --dir "$PROJECT_ROOT") || exit 1
+```
+
+preflight 通過後，本輪所有 runtime 都只從它回傳的 `$BIN` 呼叫；通過前不執行任何
+`collab/bin/` 程式。`bootstrap.sh` migrate 不會重寫既有 PROTOCOL，所以舊檔若直接寫
+`collab/bin/*.sh`，本節規則優先：先建立 trust anchor，再改用 `$BIN/...`。
 
 ## 角色分工
 
@@ -22,10 +47,11 @@
 >
 > ```bash
 > # {{PEER}} 發起（方向與上面的範例相反,流程一模一樣）
-> DRAFT=$(collab/bin/next-id.sh claude my-proposal w3:t3)
+> # 先在同一輪執行上面的 trust-anchor block，取得已驗證的 BIN。
+> DRAFT=$("$BIN/next-id.sh" claude my-proposal w3:t3)
 > #   …寫入 frontmatter: from: {{PEER}} / to: claude / type: review-request / pair: w3:t3…
-> DEST=$(collab/bin/publish.sh "$DRAFT")
-> collab/bin/knock.sh <claude_pane_id> "process $DEST"
+> DEST=$("$BIN/publish.sh" "$DRAFT")
+> "$BIN/knock.sh" <claude_pane_id> "process $DEST"
 > ```
 >
 > ⚠️ 但**別在對方正同步等你 settle 時用同步 knock 回敲**——那會死鎖,見下面
@@ -49,15 +75,15 @@ collab/
 一則訊息 = `inbox/to/<recipient>/` 下一個 markdown 檔。
 **檔名**：`<ULID>-<tab>-<slug>.md`，例：`01M0WG3WJF6AX39B2RGCPVN2CM-w3t3-review-auth.md`。
 
-> **編號必須用 `collab/bin/next-id.sh` 產生**（雙方共用同一入口）。**絕不要自己
+> **編號必須用 trusted preflight 回傳的 `$BIN/next-id.sh` 產生**。**絕不要自己
 > 手算 id**，尤其不要「現有最大 + 1」——那是 read-then-write 競態，兩個 session
 > 同時算就撞號（v0.4 之前實際發生過：同一收件匣出現兩則 `0033`）。
 >
 > ```bash
-> # 雙方都用專案內的同一個入口（peer CLI 沒有 CLAUDE_PLUGIN_ROOT）
-> DRAFT=$(collab/bin/next-id.sh {{PEER}} review-my-topic w3:t3)   # 回傳 .md.part 草稿
+> # 同一輪先跑 trust-anchor block；peer 的 trusted path 來自它自己的 clone/install。
+> DRAFT=$("$BIN/next-id.sh" {{PEER}} review-my-topic w3:t3)   # 回傳 .md.part 草稿
 > # …把完整內容寫進 $DRAFT…
-> DEST=$(collab/bin/publish.sh "$DRAFT")   # 原子 no-replace link 成最終 .md
+> DEST=$("$BIN/publish.sh" "$DRAFT")   # 原子 no-replace link 成最終 .md
 > ```
 >
 > **v0.6：先寫草稿，再 publish（原子上架）。** `next-id.sh` 回傳的是**草稿**路徑
@@ -87,30 +113,47 @@ collab/
 
 ```markdown
 ---
+schema: 2
 id: 01M0WG3WJF6AX39B2RGCPVN2CM
-pair: w3:t3
+thread: 01M0WG3WJF6AX39B2RGCPVN2CM
 from: claude
 to: {{PEER}}
+from_agent: claude-primary
+to_agent: {{PEER}}-primary
+intent: action
 type: review-request
 subject: '一句話標題'
 refs: 'branch / commit / 檔案'
 status: open
+pair: w3:t3
 ---
 
 <正文：要對方做什麼、脈絡、驗收條件。一則只講一件事。>
 ```
 
+> **定址靠 participant,不靠 tab。** `pair` 是**位置**:同一個 tab 裡只要出現兩個同 kind
+> 的 participant,它就同時符合兩邊,每則訊息都變得有歧義。`to_agent` / `from_agent` 是
+> **穩定的 participant id**,路由精確比對它——pane 換了、agent 重啟了,位址都不變。
+> 但 `pair` 與 `status: open` **仍然照寫**:昨天就啟動、還在跑的 reader 是靠它們對帳的,
+> 而改一個磁碟上的檔案不會讓那個 session 重新載入。什麼時候可以不寫,由
+> `"$BIN/route.sh" capability` 回答(現在的答案是:不行)。
+
 欄位說明(**不要把這些註解抄進真正的訊息**——validator 會把 `# ...` 當成值的一部分):
 
 | 欄位 | 值 |
 |---|---|
+| `schema` | `2`。舊訊息沒有這一行,讀取時視為 `1` |
 | `id` | `next-id.sh` 產生的 ULID,**必須與檔名前綴相同** |
-| `pair` | 發訊方的 herdr tab_id(多組並存時用來路由) |
-| `from` / `to` | `claude` \| `{{PEER}}` |
+| `thread` | 這串對話的 id;開新話題時填自己的 `id` |
+| `from` / `to` | kind:`claude` \| `{{PEER}}`(也決定 `inbox/to/` 目錄) |
+| `from_agent` / `to_agent` | **穩定 participant id**(如 `claude-primary`),路由比對這個 |
+| `intent` | `action` \| `fyi`——你要對方做什麼,不是生命週期 |
 | `type` | `review-request` \| `review-result` \| `task` \| `reply` \| `question` \| `ack` |
 | `subject` / `refs` | **你自己寫的文字 → 單引號**(見下) |
 | `reply_to` | 可選,**只在回覆時出現**:填**對方那則**的 id(不是自己的)。開新話題時整行省略 |
-| `status` | `open` \| `done` \| `closed` |
+| `outcome` | 可選,**只出現在收訊方的終局回覆**:`done` \| `rejected` \| `failed` \| `canceled`。問題與進度回報不帶,才不會被誤讀成「做完了」 |
+| `status` | `open` \| `done` \| `closed`(legacy,仍照寫) |
+| `pair` | 發訊方的 herdr tab_id(legacy,仍照寫) |
 
 > ⚠️ **human 欄位用單引號,machine 欄位不要加引號。**
 > `subject`、`refs`(未來的 `note`/`alias`)是你自己寫的文字 → **一律單引號**;
@@ -121,22 +164,23 @@ status: open
 > 已經publish 了 13 則這種訊息,永遠修不掉,因為訊息一旦發布就不可變)。
 >
 > 規則:單引號、內部單引號寫兩次(`'it''s'`)、**不可換行**。
-> `collab/bin/fm-quote.sh <文字>` 直接產生合規的值;
-> `collab/bin/check-envelope.sh <檔>` 會在你 publish 前告訴你哪裡不合規。
+> `"$BIN/fm-quote.sh" <文字>` 直接產生合規的值;
+> `"$BIN/check-envelope.sh" <檔>` 會在你 publish 前告訴你哪裡不合規。
 
 ## 收發流程（一輪）
 
 1. **寫 + 上架**：發訊方 `next-id.sh` 取草稿路徑 → 把完整內容（含 `status: open`）
    寫進草稿 → `publish.sh` 原子上架成最終 `.md`（見上「先寫草稿，再 publish」）。
 2. **敲門（先等，再送+等）**：先依「herdr 座標」那節**動態解析出對方的 pane_id**，
-   再跑 `collab/bin/knock.sh <對方_pane_id> "<一句話，並指名檔案路徑>"`（雙方共用
+   再跑 `"$BIN/knock.sh" <對方_pane_id> "<一句話，並指名檔案路徑>"`（雙方共用
    這一個入口，方向相反也一樣）。
    knock 會先用 `herdr agent wait` **把對方進行中的那一輪等完**再提交——
    herdr 明文說 `prompt --wait` 不追蹤 turn：對方還在 `working` 時直接提交，
    等到的可能是**上一輪**的結束，你會去讀一個還不存在的回覆檔。
    之後才是 `agent prompt --wait` 提交 nudge 並阻塞到對方那一輪 settle，回傳 `agent_status`。
 3. **讀 + 做**：對方 settle 後（idle/done）**只讀 nudge 指名的那個檔**；
-   若未指名，只處理 `pair` 等於自己 tab_id 的 `open` 訊息，其餘不動也不歸檔。
+   若未指名，跑 `"$BIN/route.sh" list`——它列出**定址給你**的訊息（由舊到新），
+   其餘不動也不歸檔。
    （只認 `.md`；`.<…>.md.part` 是還沒 publish 的草稿，掃描時本來就看不到、也不要碰。）
    settle 了卻**找不到回覆檔**：等到的不是你那一輪（例如別組在 pre-settle 與提交
    之間也敲了它），你的 nudge 還排在隊裡。此時裸跑一次 `agent wait` 沒有用——
@@ -175,7 +219,9 @@ status: open
 > `inbox/pairs/<pair-id>/to/<agent>/` 的目錄結構。
 
 → 每則訊息的 frontmatter 必須帶 `pair`（發訊方的 `tab_id`）；
-   收訊方**只處理 `pair` 等於自己 tab_id 的訊息**，其餘不動也不歸檔（那是別組的）。
+   收訊方用 `route.sh list` 決定哪些是自己的：有 `to_agent` 就精確比對它，沒有的
+   （已上架、因此無法補寫的舊訊息）才回退到 `pair`。**有 `to_agent` 卻不是你的，
+   絕不因為 tab 相同而回退**——那正是精確路由要防的誤投。其餘不動也不歸檔。
    敲門的 nudge 要明講檔名，不要只說「看收件匣」。
    `inbox/to/*` 可能同時留著別組的 `open` 訊息，這是正常的。
 
@@ -219,7 +265,7 @@ herdr agent list | jq -r --arg me "<my-session-id>" '.result.agents[]
 **敲門前一定要把「我是誰 → 要敲誰」印出來讓人類可核對。**
 同 tab 找不到對方時**停下來問人**，不要退回去用任何寫死的 pane_id。
 
-- **雙方敲門都用 `collab/bin/knock.sh <對方_pane_id> "..."`**（用解析出的 pane_id；
+- **雙方敲門都用 `"$BIN/knock.sh" <對方_pane_id> "..."`**（用解析出的 pane_id；
   `knock.sh {{PEER}}` 這種名稱解析在有兩個以上同類 agent 時會拒絕，那是警訊不是故障）。
   它先 pre-settle 再提交；**敲門時不要自己裸跑 `herdr agent prompt ... --wait`**——
   對方還在 working 時那個 wait 可能吃到**上一輪**的結束（herdr 明載 prompt 不追蹤
@@ -238,16 +284,19 @@ herdr agent list | jq -r --arg me "<my-session-id>" '.result.agents[]
 兩邊互等成死鎖(wait-cycle)。角色對稱或網狀時一定會遇到。解法是把「送」和「收」都
 非同步化:
 
-- **送(不等)**:`collab/bin/knock.sh --submit-only <對方_pane_id> "<nudge>"`。跳過
+- **送(不等)**:`"$BIN/knock.sh" --submit-only <對方_pane_id> "<nudge>"`。跳過
   pre-settle、不帶 `--wait`,herdr **接受** submission 就返回(stderr 印 `submitted,
   not settled`),不等對方開始／完成／回覆。實測確認:對 working peer 的 no-wait submit
   會被接受並排在它當前 turn 之後(不丟、不打斷);blocked peer 仍會被 herdr 拒
   (`agent_blocked`,原樣透傳)。
 - **收(每輪開場先對帳自己的收件匣)**:nudge 只是 best-effort 喚醒,而且 herdr 的 turn
   邊界模糊(無法靠「等對方再次 working」偵測排隊訊息),所以**durable 訊息檔才是事實
-  來源**。每次你**開始一輪協作前**,先掃自己 `inbox/to/<自己>/` 裡 `pair` 符合、
-  `status: open` 的訊息並處理,再做新任務。這是 turn-start 對帳,不是背景輪詢:遺失或
-  延遲的 nudge 靠檔案補回。
+  來源**。每次你**開始一輪協作前**,先跑 `"$BIN/route.sh" list`(這個 session 還沒
+  bind 就加 `--agent <自己的 participant id>`)並處理列出來的訊息,再做新任務。
+  `route.sh explain <檔>` 會說明某一則為什麼有/沒有列進來。這是 turn-start 對帳,
+  不是背景輪詢:遺失或延遲的 nudge 靠檔案補回。
+  被判為 **unrouted**(沒有 `to_agent` 也沒有 `pair`)或**讀不動**的檔會列在 stderr
+  並原地保留:不會被默默認領,也不會被默默丟掉。
 - **at-least-once、冪等**:一則訊息可能被處理多次。最關鍵的原因是 crash window(不只是
   「nudge + 對帳」兩條發現路徑):若你做完副作用、但在**歸檔前**中斷,下一輪會再看到同一個
   `open` id 而重做。所以副作用要用 `id`／`reply_to` 去重,**歸檔放最後**(已歸檔的 id 不

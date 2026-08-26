@@ -260,5 +260,42 @@ got="$(printf 'clean value' | bash "$QUOTE" -)" || { echo "        rejected a cl
 [ "$r21" = 0 ] && ok "a NUL byte is refused by the file scan and by fm-quote's stdin read" \
                || bad "NUL handling incomplete"
 
+# --- a legacy reply REFERENCE is as unrewritable as a legacy id ------------
+# The reader tolerates pre-ULID identifiers because those messages are already published.
+# The same is true of what they point AT: a v0.4-era reply legitimately carries
+# `reply_to: 0077`, so narrowing the tolerance to `id` alone would make every legacy reply
+# chain unreadable while the messages themselves stayed perfectly valid.
+t="$(mktemp -d)"
+printf -- '---\nid: 0078\nfrom: codex\nto: claude\ntype: reply\nsubject: %s\nreply_to: 0077\nstatus: open\n---\nbody\n' \
+  "'legacy reply'" > "$t/legacy.md"
+envelope_read "$t/legacy.md" >/dev/null 2>&1 \
+  && ok "a schema-1 reply_to pointing at a pre-ULID id is readable" \
+  || bad "legacy reply chain unreadable"
+envelope_check "$t/legacy.md" >/dev/null 2>&1 \
+  && bad "the publish gate accepted a pre-ULID reply_to" \
+  || ok "the publish gate still requires ULIDs for anything newly written"
+rm -rf "$t"
+
+# --- every failure exit leaves the scan state empty, not just the last one -
+# "A failed scan leaves nothing behind" was written as an epilogue, so the EARLY returns —
+# which are failures too — walked past it. An unknown schema then left ENV_SCHEMA set, and
+# `route explain` printed `schema: 3` beside UNREADABLE: a caller reading state from a
+# scan that had been refused.
+t="$(mktemp -d)"
+for probe in 'schema: 3' 'schema: 0'; do
+  printf -- '---\n%s\nid: 01M0WG3WJF6AX39B2RGCPVN2CM\nfrom: claude\nto: codex\ntype: task\nsubject: %s\nstatus: open\n---\nbody\n' \
+    "$probe" "'x'" > "$t/unknown.md"
+  envelope_read "$t/unknown.md" >/dev/null 2>&1; rc=$?
+  { [ "$rc" != 0 ] && [ -z "$ENV_SCHEMA" ] && [ "$_ENV_N" = 0 ]; } \
+    && ok "an unknown schema ($probe) fails and leaves no scan state behind" \
+    || bad "early failure kept state ($probe: rc=$rc ENV_SCHEMA='$ENV_SCHEMA' n=$_ENV_N)"
+done
+printf 'no frontmatter\n' > "$t/nofm.md"
+envelope_read "$t/nofm.md" >/dev/null 2>&1; rc=$?
+{ [ "$rc" != 0 ] && [ -z "$ENV_SCHEMA" ] && [ "$_ENV_N" = 0 ]; } \
+  && ok "a file with no frontmatter leaves no scan state behind" \
+  || bad "missing-frontmatter failure kept state (rc=$rc)"
+rm -rf "$t"
+
 [ "$fails" -eq 0 ] && { echo "envelope: all passed"; exit 0; }
 echo "envelope: $fails failed" >&2; exit 1

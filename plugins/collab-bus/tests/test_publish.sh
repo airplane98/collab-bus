@@ -281,5 +281,55 @@ out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
   || bad "NUL draft published (rc=$rc)"
 rm -rf "$t"
 
+# --- 23-25. schema-2 addressees must exist, and be of the kind claimed -----
+# `to_agent` used to be a bare string, so a perfectly legal publish could name a
+# participant nobody registered, or one whose kind did not match the inbox it landed in.
+# Every reader then said "not mine", quietly, with rc 0 — undeliverable and unreported.
+# The gate is the last place such a message can still be refused.
+BOOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/scripts/bootstrap.sh"
+t="$(mktemp -d)"
+( cd "$t" && bash "$BOOT" codex --dir . ) >/dev/null 2>&1
+write_msg2() { # <draft> <to_agent>
+  local id; id="$(basename "$1")"; id="${id#.}"; id="${id%%-*}"
+  cat > "$1" <<EOF
+---
+schema: 2
+id: $id
+thread: $id
+from: claude
+to: codex
+from_agent: claude-primary
+to_agent: $2
+intent: action
+type: task
+subject: 'addressee fixture'
+status: open
+pair: w3:t6
+---
+body
+EOF
+}
+# next-id.sh returns an ABSOLUTE draft path here; prefixing $t to it would silently write
+# the fixture somewhere that does not exist and leave the real draft empty.
+d="$( cd "$t" && collab/bin/next-id.sh codex wrongkind w3:t6 )"
+write_msg2 "$d" claude-primary             # kind claude, published into the codex inbox
+out="$( cd "$t" && collab/bin/publish.sh "$d" 2>&1 )"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "is kind 'claude'" && [ -f "$d" ]; } \
+  && ok "a recipient whose kind contradicts the inbox is refused, draft kept" \
+  || bad "wrong-kind recipient published (rc=$rc)"
+
+write_msg2 "$d" ghost-primary
+out="$( cd "$t" && collab/bin/publish.sh "$d" 2>&1 )"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "not a registered participant"; } \
+  && ok "an unregistered recipient is refused before it can become undeliverable" \
+  || bad "unregistered recipient published (rc=$rc)"
+
+write_msg2 "$d" codex-primary
+out="$( cd "$t" && collab/bin/publish.sh "$d" 2>&1 )"; rc=$?
+{ [ "$rc" = 0 ] && [ -f "$out" ]; } \
+  && ok "a registered recipient of the right kind publishes normally" \
+  || bad "valid schema-2 message refused (rc=$rc out=$out)"
+rm -rf "$t"
+
 [ "$fails" -eq 0 ] && { echo "publish: all passed"; exit 0; }
 echo "publish: $fails failed" >&2; exit 1

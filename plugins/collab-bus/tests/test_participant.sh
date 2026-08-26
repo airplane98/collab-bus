@@ -683,5 +683,186 @@ else
   ok "a parser that prints then exits nonzero is discarded (skipped: no usable ruby here)"
 fi
 
+# --- 39. get is the machine-readable accessor, and it validates first ------
+# A consumer that scrapes `show` is doing the per-key search step 2 banned, one directory
+# over: it would happily read a valid-looking field out of a corrupt file.
+t="$(newproj)"
+run "$t" register codex-primary --kind codex --alias 'Codex' >/dev/null 2>&1
+g1="$(run "$t" get codex-primary kind 2>/dev/null)"
+out="$(run "$t" get codex-primary pane_id 2>&1)"; rc=$?
+{ [ "$g1" = codex ] && [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "no binding"; } \
+  && ok "get reads identity fields, and says so when there is no binding yet" \
+  || bad "get wrong before binding (kind=$g1 rc=$rc)"
+run "$t" bind codex-primary >/dev/null 2>&1
+{ [ "$(run "$t" get codex-primary tab_id 2>/dev/null)" = w3:t6 ] \
+  && [ "$(run "$t" get codex-primary reader_schema 2>/dev/null)" = 2 ]; } \
+  && ok "get reads binding fields once the participant is bound" \
+  || bad "get returned the wrong binding fields"
+run "$t" get codex-primary nonsense >/dev/null 2>&1 \
+  && bad "get accepted an unknown field" \
+  || ok "get refuses a field it does not define"
+
+# --- 40. a binding whose participant disagrees with its filename is refused
+# Three records of one fact — filename, content, and the id asked for — and a reader that
+# compares only two of them acts on a mismatched file.
+sed -i.bak 's/"participant": "codex-primary"/"participant": "claude-primary"/' \
+  "$t/collab/bindings/codex-primary.json"; rm -f "$t/collab/bindings/codex-primary.json.bak"
+out="$(run "$t" get codex-primary pane_id 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "claude-primary"; } \
+  && ok "a binding whose participant disagrees with its filename is refused" \
+  || bad "mismatched binding accepted by get (rc=$rc)"
+
+# --- 41. whoami answers from a binding somebody deliberately created -------
+t="$(newproj)"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+who="$(run "$t" whoami 2>/dev/null)"; rc=$?
+{ [ "$rc" = 0 ] && [ "$who" = codex-primary ]; } \
+  && ok "whoami resolves the participant this session already claimed" \
+  || bad "whoami wrong (rc=$rc who=$who)"
+
+# --- 42. one session holding two identities is a conflict, not a choice ----
+run "$t" register codex-second --kind codex >/dev/null 2>&1
+run "$t" bind codex-second >/dev/null 2>&1
+out="$(run "$t" whoami 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "more than one"; } \
+  && ok "a session bound to two participants refuses to pick one" \
+  || bad "whoami picked a winner from a duplicate claim (rc=$rc)"
+
+# --- 43. an unreadable binding is not "not mine" --------------------------
+# Skipping a corrupt file quietly answers "nobody is bound here" for a session whose own
+# record is the corrupt one — the caller then binds over itself.
+t="$(newproj)"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+printf 'garbage\n' > "$t/collab/bindings/other.json"
+out="$(run "$t" whoami 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "unreadable"; } \
+  && ok "an unreadable binding stops whoami instead of being read as absent" \
+  || bad "whoami answered past a corrupt binding (rc=$rc)"
+
+# --- 44. whoami applies the same artifact gate as get and show ------------
+# It went straight from `[ -f ]` to binding_read, so a leaf symlink was followed and a
+# file outside the project could answer "which identity am I?".
+t="$(newproj)"; away="$ROOT/away.$$"; mkdir -p "$away"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+mv "$t/collab/bindings/codex-primary.json" "$away/"
+ln -s "$away/codex-primary.json" "$t/collab/bindings/codex-primary.json"
+out="$(run "$t" whoami 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "symlink"; } \
+  && ok "whoami refuses a symlinked binding instead of reading through it" \
+  || bad "whoami followed a symlinked binding (rc=$rc out=$out)"
+
+# --- 45. a binding with no identity behind it is not an answer either ------
+# The identity is the durable half; a claim on something unregistered is not a claim.
+t="$(newproj)"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+sed 's/codex-primary/orphan-one/g' "$t/collab/bindings/codex-primary.json" \
+  > "$t/collab/bindings/orphan-one.json"
+out="$(run "$t" whoami 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "orphan-one"; } \
+  && ok "an orphan binding stops whoami rather than answering for a ghost" \
+  || bad "orphan binding accepted (rc=$rc out=$out)"
+
+# --- 46-48. whoami must run the identity through its CODEC, not stat it ----
+# `[ -f "$PDIR/$base.json" ]` follows a symlink and reads nothing, so a symlinked or
+# corrupt identity still counted as "an identity is behind this binding". The invariant
+# lives in participant_load — id vs filename vs content, kind, parent symlink — and a
+# reader that skips it does not have the invariant.
+t="$(newproj)"; ext="$ROOT/extid.$$"; mkdir -p "$ext"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+cp "$t/collab/participants/codex-primary.json" "$ext/"
+rm "$t/collab/participants/codex-primary.json"
+ln -s "$ext/codex-primary.json" "$t/collab/participants/codex-primary.json"
+out="$(run "$t" whoami 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && ! printf '%s' "$out" | grep -qx "codex-primary"; } \
+  && ok "a symlinked identity is not an identity, and whoami refuses it" \
+  || bad "whoami answered through a symlinked identity (rc=$rc out=$out)"
+
+rm -f "$t/collab/participants/codex-primary.json"
+printf 'garbage\n' > "$t/collab/participants/codex-primary.json"
+out="$(run "$t" whoami 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && ! printf '%s' "$out" | grep -qx "codex-primary"; } \
+  && ok "a corrupt identity behind a valid binding still refuses whoami" \
+  || bad "whoami answered for a corrupt identity (rc=$rc out=$out)"
+
+t="$(newproj)"; away2="$ROOT/awaydir.$$"; mkdir -p "$away2"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+cp "$t/collab/participants/codex-primary.json" "$away2/"
+rm -rf "$t/collab/participants"; ln -s "$away2" "$t/collab/participants"
+out="$(run "$t" whoami 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "symlink"; } \
+  && ok "a symlinked participants/ cannot answer whoami either" \
+  || bad "whoami read through a symlinked registry (rc=$rc out=$out)"
+
+# --- 49. snapshot is ONE decode: schema and liveness from the same holder --
+t="$(newproj)"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+snap="$(run "$t" snapshot codex-primary 2>/dev/null)"
+{ [ "$snap" = "$(printf '2\tlive\tw3:pD\tw3:t6\tsess-A')" ]; } \
+  && ok "snapshot reports schema, liveness and transport from one binding read" \
+  || bad "snapshot output wrong ('$snap')"
+printf 'sess-gone\n' > "$t/state/live"
+snap="$(run "$t" snapshot codex-primary 2>/dev/null)"
+{ [ "$snap" = "$(printf '2\tabsent\tw3:pD\tw3:t6\tsess-A')" ]; } \
+  && ok "snapshot reports the decoded holder's liveness, not the file's existence" \
+  || bad "snapshot liveness wrong ('$snap')"
+run "$t" snapshot codex-primary extra >/dev/null 2>&1 \
+  && bad "snapshot accepted a trailing argument" \
+  || ok "snapshot refuses trailing arguments instead of ignoring a typo"
+run "$t" get codex-primary kind extra >/dev/null 2>&1 \
+  && bad "get accepted a trailing argument" \
+  || ok "get refuses trailing arguments instead of ignoring a typo"
+
+# --- 50. transport and liveness must come from ONE decode too --------------
+# The capability bug wearing transport clothes: `get live` then `get pane_id` are two
+# processes over a mutable binding, so a rebind between them joins the OLD holder's proven
+# liveness to the NEW holder's pane — and nothing ever proved that pane's holder was live.
+# The seam is the same wrapper trick: the swap fires after the first participant call, so
+# a single snapshot has no second read to poison.
+t="$(newproj)"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+B="$t/collab/bindings/codex-primary.json"
+sed -e 's/"agent_session": "[^"]*"/"agent_session": "sess-old"/' -e 's/"pane_id": "[^"]*"/"pane_id": "w3:pA"/' \
+    "$B" > "$t/old.json"; cp "$t/old.json" "$B"
+sed -e 's/"agent_session": "sess-old"/"agent_session": "sess-new"/' -e 's/"pane_id": "w3:pA"/"pane_id": "w3:pZ"/' \
+    "$t/old.json" > "$t/new.json"
+printf 'sess-old\n' > "$t/state/live"          # only the OLD holder is live
+wrap="$ROOT/wrap.$$"; mkdir -p "$wrap"
+cp "$P" "$wrap/participant.real.sh"; cp -R "$DIR/scripts/lib" "$wrap/lib"
+cat > "$wrap/participant.sh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd -P)"
+rc=0; "$d/participant.real.sh" "$@" || rc=$?
+[ -n "${SWAP:-}" ] && [ -f "$SWAP" ] && { sh "$SWAP"; rm -f "$SWAP"; }
+exit $rc
+EOF
+chmod +x "$wrap/participant.sh"
+printf 'cp "%s" "%s"\n' "$t/new.json" "$B" > "$t/swap.sh"
+# First, demonstrate the hazard the accessor exists to remove: the two-call sequence the
+# send guidance used to prescribe. The swap fires after the first call, so the liveness
+# proven for sess-old is joined to the pane of sess-new — which the live list never
+# contained. If this ever stops splicing, the case below is no longer testing anything.
+splice_live="$( cd "$t" && HERDR_STATE="$t/state" SWAP="$t/swap.sh" bash "$wrap/participant.sh" get codex-primary live 2>/dev/null )"
+splice_pane="$( cd "$t" && HERDR_STATE="$t/state" bash "$P" get codex-primary pane_id 2>/dev/null )"
+{ [ "$splice_live" = live ] && [ "$splice_pane" = "w3:pZ" ]; } \
+  && ok "two reads of a mutable binding do splice a live holder onto another's pane" \
+  || bad "the hazard fixture no longer reproduces ('$splice_live' / '$splice_pane')"
+# Now the same interleaving against ONE snapshot: the swap still fires, but there is no
+# second read to poison, so the pane belongs to the holder whose liveness was reported.
+cp "$t/old.json" "$B"
+printf 'cp "%s" "%s"\n' "$t/new.json" "$B" > "$t/swap.sh"
+snap="$( cd "$t" && HERDR_STATE="$t/state" SWAP="$t/swap.sh" bash "$wrap/participant.sh" snapshot codex-primary 2>/dev/null )"
+after="$( cd "$t" && HERDR_STATE="$t/state" bash "$P" get codex-primary pane_id 2>/dev/null )"
+{ [ "$snap" = "$(printf '2\tlive\tw3:pA\tw3:t6\tsess-old')" ] && [ "$after" = "w3:pZ" ]; } \
+  && ok "one snapshot pairs a pane with the very holder it proved live" \
+  || bad "transport snapshot spliced ('$snap' / after='$after')"
+
 [ "$fails" -eq 0 ] && { echo "participant: all passed"; exit 0; }
 echo "participant: $fails failed" >&2; exit 1

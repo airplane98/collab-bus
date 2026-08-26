@@ -107,6 +107,35 @@ case "$dir" in
       exit 2
     fi ;;
 esac
+# The addressees must be participants that EXIST, of the kind the message claims. Without
+# this a perfectly legal publish could name a recipient nobody has registered, or a
+# recipient whose kind does not match the inbox it lands in — and every reader would then
+# say "not mine", quietly, with rc 0. A message nobody claims and nobody reports is worse
+# than a refused one, and the gate is the last place it can still be refused.
+_pub_reg="$(cd "$dir/../../.." 2>/dev/null && pwd -P)" || _pub_reg=""
+_pub_part="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/participant.sh"
+_pub_check_agent() { # <field> <participant-id> <declared-kind>
+  local k
+  [ -n "$2" ] || return 0
+  if [ -z "$_pub_reg" ] || [ ! -d "$_pub_reg/participants" ]; then
+    echo "error: $1: $2 cannot be verified — no participant registry found (draft kept)" >&2
+    return 1
+  fi
+  k="$(COLLAB_ROOT="$_pub_reg" "$_pub_part" get "$2" kind 2>/dev/null)" || {
+    echo "error: $1: '$2' is not a registered participant (draft kept)" >&2
+    echo "       register it first: participant.sh register $2 --kind $3" >&2
+    return 1; }
+  [ "$k" = "$3" ] || {
+    echo "error: $1: '$2' is kind '$k', but the message says '$3' (draft kept)" >&2
+    return 1; }
+  return 0
+}
+_pub_fa="$(fm_get "$DRAFT" from_agent 2>/dev/null || true)"
+_pub_ta="$(fm_get "$DRAFT" to_agent 2>/dev/null || true)"
+_pub_from="$(fm_get "$DRAFT" from 2>/dev/null || true)"
+_pub_check_agent from_agent "$_pub_fa" "$_pub_from" || exit 2
+_pub_check_agent to_agent   "$_pub_ta" "$_pub_box"  || exit 2
+
 _pub_pair="$(fm_get "$DRAFT" pair 2>/dev/null || true)"
 if [ -n "$_pub_pair" ]; then
   _pub_ftab="${final#*-}"; _pub_ftab="${_pub_ftab%%-*}"      # <ULID>-w1t1-slug.md -> w1t1

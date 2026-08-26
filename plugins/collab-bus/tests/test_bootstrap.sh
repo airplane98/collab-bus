@@ -420,7 +420,7 @@ out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
 # --- 27. older tooling must not silently downgrade a newer manifest --------
 t="$(newdir)"
 (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
-sed -i.bak -e 's/"read": \[1, 2\]/"read": [1, 2, 3]/' -e 's/"write": 1/"write": 3/' \
+sed -i.bak -e 's/"read": \[1, 2\]/"read": [1, 2, 3]/' -e 's/"write": [0-9][0-9]*/"write": 3/' \
            -e 's/"publisher_version": "[^"]*"/"publisher_version": "9.0.0"/' "$t/collab/bus.json"
 rm -f "$t/collab/bus.json.bak"
 out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
@@ -613,7 +613,7 @@ mfraw "read list with a trailing comma" \
 # A fail-closed policy an inherited env var can switch off is not a policy.
 t="$(newdir)"
 (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
-sed -i.bak -e 's/"read": \[1, 2\]/"read": [1, 2, 3]/' -e 's/"write": 1/"write": 3/' "$t/collab/bus.json"
+sed -i.bak -e 's/"read": \[1, 2\]/"read": [1, 2, 3]/' -e 's/"write": [0-9][0-9]*/"write": 3/' "$t/collab/bus.json"
 rm -f "$t/collab/bus.json.bak"
 before="$(cksum < "$t/collab/bus.json")"
 out="$(cd "$t" && MF_TOOLING_READ=1,2,3 MF_TOOLING_WRITE=1,3 bash "$BOOT" codex 2>&1)"; rc=$?
@@ -707,13 +707,13 @@ out="$(cd "$t" && bash "$BOOT" "$long" 2>&1)"; rc=$?
 # --- 42. …and on migrate, no vendored file is touched either ---------------
 t="$(newdir)"
 (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
-for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh; do
+for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh route.sh; do
   printf 'MARKED %s\n' "$f" > "$t/collab/bin/$f"
 done
 busbefore="$(cksum < "$t/collab/bus.json")"
 out="$(cd "$t" && bash "$BOOT" "$long" 2>&1)"; rc=$?
 intact=1
-for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh; do
+for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh route.sh; do
   [ "$(cat "$t/collab/bin/$f")" = "MARKED $f" ] || intact=0
 done
 { [ "$rc" != 0 ] && [ "$intact" = 1 ] && [ "$busbefore" = "$(cksum < "$t/collab/bus.json")" ]; } \
@@ -749,6 +749,223 @@ out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
 { [ "$rc" != 0 ] && [ "$(cat "$t/collab/bin/next-id.sh")" = "MARKED" ] && [ -z "$(ls -A "$outside")" ]; } || r44=1
 [ "$r44" = 0 ] && ok "a wrong kind or a symlinked participants/ fails before any file is replaced" \
                || bad "registry preflight ran too late"
+
+# --- 45. the routing tool is vendored, and the manifest says we write v2 ---
+# A capability claim has to match what the vendored bin can actually do: declaring
+# `write: 2` while the routing tool is missing from collab/bin would tell a peer this
+# endpoint speaks schema 2 when nothing here routes on it.
+t="$(newdir)"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" = 0 ] && [ -x "$t/collab/bin/route.sh" ] \
+  && grep -q '"write": 2' "$t/collab/bus.json"; } \
+  && ok "route.sh is vendored and bus.json declares schema 2 as what we write" \
+  || bad "routing capability and vendored bin disagree (rc=$rc)"
+
+# --- 46. migrating a 0.7-era project adds the routing tool -----------------
+# The whole point of migrate: an existing bus gets the new bin without its PROTOCOL or its
+# messages being rewritten.
+rm -f "$t/collab/bin/route.sh"
+before="$(cksum < "$t/collab/PROTOCOL.md")"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" = 0 ] && [ -x "$t/collab/bin/route.sh" ] \
+  && [ "$before" = "$(cksum < "$t/collab/PROTOCOL.md")" ]; } \
+  && ok "migrate re-vendors the routing tool and leaves PROTOCOL.md alone" \
+  || bad "migrate did not restore route.sh (rc=$rc)"
+
+# --- 47-50. preflight refuses a half-vendored bin, by REASON -------------
+# The check used to be a for-loop in commands/send.md and was wrong three ways: it omitted
+# lib/manifest.sh, which participant.sh and route.sh both source; it tested -e, so a
+# non-executable script reported healthy and failed at its call site; and it chose the
+# whole tree from one sentinel, so a bin holding participant.sh but no next-id.sh silently
+# switched every call to the plugin's copies. A rule with fixtures behind it is a rule.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" = 0 ] && [ "$out" = "./collab/bin" ]; } \
+  && ok "preflight passes a freshly bootstrapped bin and prints it" \
+  || bad "preflight rejected a fresh bin (rc=$rc out=$out)"
+
+rm -f "$t/collab/bin/lib/manifest.sh"
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'manifest.sh is missing'; } \
+  && ok "a bin missing lib/manifest.sh fails here, not later at a source error" \
+  || bad "missing manifest not caught (rc=$rc)"
+
+# Half a bin, and the plugin tree perfectly complete: the sentinel version passed this.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+rm -f "$t/collab/bin/next-id.sh"
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'next-id.sh is missing' \
+  && ! printf '%s' "$out" | grep -q "$DIR/scripts"; } \
+  && ok "a half bin never falls back to the plugin tree" \
+  || bad "half bin borrowed another version's entrypoints (rc=$rc out=$out)"
+
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+chmod -x "$t/collab/bin/route.sh"
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'route.sh is not executable'; } \
+  && ok "a non-executable vendored script is caught before its call site" \
+  || bad "non-executable script reported healthy (rc=$rc)"
+
+# --- 51. an executable symlinked preflight must never RUN --------------------
+# The caller cannot ask the project's own preflight whether the project can be trusted:
+# if that path is an executable symlink, the target has already run by the time any check
+# inside it says "symlinks are refused". The oracle is not the exit code — it is that the
+# TARGET'S MARKER never appears.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+marker="$t/pwned"
+cat > "$t/evil.sh" <<EOF
+#!/bin/sh
+: > "$marker"
+exit 7
+EOF
+chmod +x "$t/evil.sh"
+rm -f "$t/collab/bin/preflight.sh"; ln -s "$t/evil.sh" "$t/collab/bin/preflight.sh"
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && [ ! -e "$marker" ] && printf '%s' "$out" | grep -q 'preflight.sh is a symlink'; } \
+  && ok "the plugin's preflight refuses a symlinked vendored preflight without running it" \
+  || bad "symlinked preflight executed or was accepted (rc=$rc marker=$([ -e "$marker" ] && echo yes || echo no))"
+
+# --- 52. a symlinked parent hides every leaf check ---------------------------
+# `-L` is false for every leaf while the whole tree hangs off a symlinked parent, so
+# checking only the leaves proves nothing about where they live.
+t="$(newdir)"; ext="$ROOT/extcollab.$$"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+mv "$t/collab" "$ext"; ln -s "$ext" "$t/collab"
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'collab is a symlink'; } \
+  && ok "a symlinked collab/ is refused before anything under it is trusted" \
+  || bad "symlinked collab/ accepted (rc=$rc)"
+
+t="$(newdir)"; extlib="$ROOT/extlib.$$"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+mv "$t/collab/bin/lib" "$extlib"; ln -s "$extlib" "$t/collab/bin/lib"
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'lib is a symlink'; } \
+  && ok "a symlinked collab/bin/lib is refused, not hidden by its leaves passing" \
+  || bad "symlinked lib/ accepted — libraries would be sourced from outside (rc=$rc)"
+
+# --- 53. executable is not readable: a shell script needs both --------------
+# `chmod 0111` leaves -x true and the script unusable: the interpreter has to READ it, so
+# a preflight that passed here is immediately contradicted by rc 126 at the call site.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+chmod a-r "$t/collab/bin/next-id.sh"
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+irc=0; (cd "$t" && collab/bin/next-id.sh codex x w1:t1 >/dev/null 2>&1) || irc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'next-id.sh is not readable' && [ "$irc" = 126 ]; } \
+  && ok "an unreadable-but-executable script is refused, matching what the shell does" \
+  || bad "unreadable script passed preflight (rc=$rc, running it gave $irc)"
+chmod u+r "$t/collab/bin/next-id.sh"
+
+# --- 54. one inventory, so the writer and the checker cannot disagree -------
+# The old guard grepped preflight's whole source for each vendored name, so a mention in
+# a COMMENT satisfied it. There is now a single machine-readable list; this asserts both
+# readers agree with it, and that removing an entry from it really does redden.
+INV="$DIR/scripts/lib/inventory.sh"
+inv_all="$( . "$INV"; printf '%s %s' "$COLLAB_BINS" "$COLLAB_LIBS" )"
+boot_all="$( . "$INV"; printf '%s' "${COLLAB_BINS} ${COLLAB_LIBS}" )"
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+missing=""
+for f in $inv_all; do [ -f "$t/collab/bin/$f" ] || missing="$missing $f"; done
+extra=""
+for f in $(cd "$t/collab/bin" && find . -type f | sed 's|^\./||'); do
+  case " $inv_all " in *" $f "*) : ;; *) extra="$extra $f" ;; esac
+done
+{ [ -z "$missing" ] && [ -z "$extra" ] && [ -n "$boot_all" ]; } \
+  && ok "bootstrap vendors exactly the inventory — no more, no less" \
+  || bad "bin does not match the inventory (missing:$missing extra:$extra)"
+
+# And the guard must be able to fail: drop one required entry and the bin it produces
+# must stop satisfying preflight. A guard nobody has seen go red is a guess.
+tree="$ROOT/invtree.$$"; mkdir -p "$tree"
+# The whole plugin tree: bootstrap reads the PROTOCOL template and the plugin manifest
+# from its siblings, so a partial copy fails for a reason that has nothing to do with what
+# this case is testing — and would pass the assertion below for the wrong reason.
+cp -R "$DIR/." "$tree/"
+sed -i.bak 's/^COLLAB_BINS="next-id.sh /COLLAB_BINS="/' "$tree/scripts/lib/inventory.sh"
+rm -f "$tree/scripts/lib/inventory.sh.bak"
+t="$(newdir)"
+(cd "$t" && bash "$tree/scripts/bootstrap.sh" codex >/dev/null 2>&1)
+out="$(cd "$t" && bash "$DIR/scripts/preflight.sh" 2>&1)"; rc=$?
+{ [ ! -f "$t/collab/bin/next-id.sh" ] && [ "$rc" != 0 ] \
+  && printf '%s' "$out" | grep -q 'next-id.sh is missing'; } \
+  && ok "removing an entry from the inventory really does produce an incomplete bin" \
+  || bad "the inventory guard cannot go red (rc=$rc)"
+
+# --- 55. every writer recipe must vet next-id before it can execute ---------
+# The old SKILL selected collab/bin after checking only `-x next-id.sh`; -x follows an
+# executable symlink, so the target ran before any trust decision. Keep the original
+# marker experiment as a permanent integration oracle: the trusted, out-of-project
+# preflight must reject the leaf and the target's marker must never appear.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+marker="$t/next-id-ran"
+cat > "$t/evil-next-id.sh" <<EOF
+#!/bin/sh
+: > "$marker"
+exit 7
+EOF
+chmod +x "$t/evil-next-id.sh"
+rm -f "$t/collab/bin/next-id.sh"; ln -s "$t/evil-next-id.sh" "$t/collab/bin/next-id.sh"
+out="$(bash "$DIR/scripts/preflight.sh" --dir "$t" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && [ ! -e "$marker" ] && printf '%s' "$out" | grep -q 'next-id.sh is a symlink'; } \
+  && ok "trusted preflight rejects a symlinked allocator before its marker can run" \
+  || bad "writer trust anchor executed or accepted symlinked next-id (rc=$rc marker=$([ -e "$marker" ] && echo yes || echo no))"
+
+# --- 56-57. runtime refuses a genuine preflight that is its own target ------
+# Docs and doclint cannot see a peer's provider-local environment. Even while the
+# vendored preflight is still genuine, it must not certify the collab root containing
+# itself — and it must decide that BEFORE sourcing another project-owned file.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+marker="$t/inventory-ran"
+printf '\n: > "%s"\n' "$marker" >> "$t/collab/bin/lib/inventory.sh"
+out="$(cd "$t" && collab/bin/preflight.sh 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && [ ! -e "$marker" ] \
+  && printf '%s' "$out" | grep -q 'trust-anchor violation' \
+  && printf '%s' "$out" | grep -q 'out-of-project trusted clone'; } \
+  && ok "the vendored preflight refuses to certify its own collab root before sourcing inventory" \
+  || bad "project preflight self-vetted or sourced project inventory (rc=$rc marker=$([ -e "$marker" ] && echo yes || echo no))"
+
+# The realistic configuration error: a peer names collab/bin itself as its supposedly
+# provider-local anchor. This is a distinct caller shape even though it reaches the same
+# genuine file, and runtime — not doclint — must reject it.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+out="$(cd "$t" && COLLAB_BUS_TRUSTED_SCRIPTS=collab/bin \
+  && "$COLLAB_BUS_TRUSTED_SCRIPTS/preflight.sh" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'trust-anchor violation' \
+  && printf '%s' "$out" | grep -q 'out-of-project trusted clone'; } \
+  && ok "a provider-local anchor pointed at collab/bin is rejected at runtime" \
+  || bad "COLLAB_BUS_TRUSTED_SCRIPTS=collab/bin silently self-vetted (rc=$rc out=$out)"
+
+# Resolve the executable leaf too, not just its parent directory: an apparently external
+# trusted path can itself be a symlink back to the project copy.
+trusted_link="$ROOT/trusted-preflight.$$"
+ln -s "$t/collab/bin/preflight.sh" "$trusted_link"
+out="$("$trusted_link" --dir "$t" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'trust-anchor violation'; } \
+  && ok "an out-of-project preflight symlink resolving into collab/bin is rejected" \
+  || bad "a trusted-looking symlink hid the project preflight location (rc=$rc out=$out)"
+
+# --- 58. one project's vendored preflight cannot certify another project ---
+# Comparing only against the inspected root leaves the same persistent config mistake
+# open across projects: a provider-local anchor aimed at project A's collab/bin would
+# silently certify project B. A trusted clone lives under scripts/; any resolved
+# preflight living directly under collab/bin is vendored and must refuse every target.
+project_a="$(newdir)"; project_b="$(newdir)"
+(cd "$project_a" && bash "$BOOT" codex >/dev/null 2>&1)
+(cd "$project_b" && bash "$BOOT" codex >/dev/null 2>&1)
+out="$("$project_a/collab/bin/preflight.sh" --dir "$project_b" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q 'trust-anchor violation' \
+  && ! printf '%s\n' "$out" | grep -Fxq "$project_b/collab/bin"; } \
+  && ok "a vendored preflight from one project cannot certify another project" \
+  || bad "project A's vendored preflight certified project B (rc=$rc out=$out)"
 
 [ "$fails" -eq 0 ] && { echo "bootstrap: all passed"; exit 0; }
 echo "bootstrap: $fails failed" >&2; exit 1

@@ -101,6 +101,17 @@ fm_quote() {
   printf "'%s'" "${s//$sq/$sq$sq}"
 }
 
+# _env_unquote <raw> — strip canonical single-quoting; in that style the only escape is a
+# doubled apostrophe. A literal \' inside ${x//../..} stays a backslash, so the pattern
+# and the replacement come from a variable.
+_env_unquote() {
+  local raw="$1" sq=\'
+  case "$raw" in
+    "'"*"'") raw="${raw#\'}"; raw="${raw%\'}"; printf '%s' "${raw//$sq$sq/$sq}" ;;
+    *) printf '%s' "$raw" ;;
+  esac
+}
+
 # envelope_schema_of <file> — 2 when `schema:` says so, else 1 (legacy has no such key).
 envelope_schema_of() {
   local v
@@ -145,13 +156,57 @@ _env_quoting_is_balanced() {
   return 0
 }
 
-# envelope_check <file> — version-aware validation. Prints every problem, returns 1 if any.
-envelope_check() {
-  local f="$1" schema keys required block line key raw bad=0 seen=""
+# --- one scanner, two modes -------------------------------------------------
+# ROUTING READS THE SAME FILES THE GATE WRITES, so it has to parse them the same way. A
+# reader that pulls three keys out with `sed -n s/^to_agent://p | head -1` reintroduces
+# exactly what the whole-file grammar exists to stop: a message carrying `to_agent:` twice
+# routes to the FIRST value here and to the LAST one in Ruby or PyYAML, so two readers
+# disagree about who a message is for. Any second implementation drifts from the first the
+# moment either changes, so there is one scanner with a mode.
+#
+# The modes differ in ONE rule, and only because published messages are immutable:
+#   publish — every identifier and reference must be a ULID. New messages are held to this.
+#   reader  — in schema 1, an identifier OR A REFERENCE TO ONE may be the pre-ULID counter
+#             (`0077`). Both halves are required, and deliberately: those messages are
+#             already on the bus and cannot be rewritten, and a legacy reply legitimately
+#             carries `reply_to: 0077`. Refusing to READ them would not un-publish them,
+#             it would only make them invisible — and narrowing this to `id` alone would
+#             re-break every legacy reply chain.
+# Everything else — duplicates, unknown keys, required keys, value shapes, quoting — is
+# identical, because none of it becomes safe to skip just because a file is old.
+#
+# On success the decoded fields are left in _ENV_K/_ENV_V for `env_field`, so a caller
+# never parses the file a second time.
+ENV_SCHEMA=""; _ENV_K=(); _ENV_V=(); _ENV_N=0
+
+# env_field <key> — the decoded value from the last successful scan, or empty.
+env_field() {
+  local i=0
+  while [ "$i" -lt "$_ENV_N" ]; do
+    [ "${_ENV_K[$i]}" = "$1" ] && { printf '%s' "${_ENV_V[$i]}"; return 0; }
+    i=$((i+1))
+  done
+  return 1
+}
+
+# envelope_check <file> — the publish gate. Prints every problem, returns 1 if any.
+envelope_check() { _envelope_scan "$1" publish; }
+# envelope_read <file> — the reader gate. Same scan, legacy ids tolerated; on success the
+# fields are available through `env_field`.
+envelope_read()  { _envelope_scan "$1" reader; }
+
+# EVERY failure exit goes through here. "A failed scan leaves nothing behind" was written
+# as an epilogue, so the early returns — which are failures too — walked straight past it
+# and left a caller reading state from a scan that had been refused.
+_env_scan_fail() { ENV_SCHEMA=""; _ENV_K=(); _ENV_V=(); _ENV_N=0; return 1; }
+
+_envelope_scan() {
+  local f="$1" mode="${2:-publish}" schema keys required block line key raw bad=0 seen=""
+  ENV_SCHEMA=""; _ENV_K=(); _ENV_V=(); _ENV_N=0
   # BEFORE any command substitution, or the byte we are looking for is already gone.
   if [ -r "$f" ] && _env_file_has_nul "$f"; then
     _env_err "$f: contains a NUL byte — refusing (a real parser would reject this file)"
-    return 1
+    _env_scan_fail; return 1
   fi
   block="$(fm_block "$f")" || {
     case $? in
@@ -159,7 +214,7 @@ envelope_check() {
       3) _env_err "$f: frontmatter is never closed by ---" ;;
       *) _env_err "$f: unreadable" ;;
     esac
-    return 1
+    _env_scan_fail; return 1
   }
   schema="$(envelope_schema_of "$f")"
   if [ "$schema" = 1 ]; then
@@ -167,8 +222,14 @@ envelope_check() {
   elif [ "$schema" = 2 ]; then
     keys="$ENVELOPE_KEYS_V2"; required="$ENVELOPE_REQUIRED_V2"
   else
-    _env_err "$f: unknown envelope schema '$schema' — refusing to guess"; return 1
+    # A schema this build cannot read is a REFUSAL, so it must not be published as the
+    # success-state ENV_SCHEMA; the rejected value belongs in the message, not in a field
+    # a caller reads after a failure.
+    _env_err "$f: unknown envelope schema '$schema' — refusing to guess"
+    _env_scan_fail; return 1
   fi
+  # Only now, with the schema known-good, does it become part of the scan result.
+  ENV_SCHEMA="$schema"
 
   while IFS= read -r line; do
     [ -n "${line//[[:space:]]/}" ] || continue
@@ -187,6 +248,9 @@ envelope_check() {
       _env_err "$f: key '$key' appears more than once — readers would disagree on its value"; bad=1; continue
     fi
     seen="$seen $key"
+    # Record the DECODED value as we go: canonical single-quoting removed exactly once,
+    # here, so no caller has to know the quoting rules to read a field.
+    _ENV_K[$_ENV_N]="$key"; _ENV_V[$_ENV_N]="$(_env_unquote "$raw")"; _ENV_N=$((_ENV_N+1))
     if [ -z "$raw" ]; then
       # Only `refs` may be present-but-empty, and only in the legacy schema, because the
       # v0.7 template emitted a bare `refs:`. Everything else must carry a value —
@@ -224,8 +288,13 @@ envelope_check() {
     case "$key" in
       schema)   [[ "$raw" =~ ^[0-9]+$ ]] || { _env_err "$f: schema must be an integer"; bad=1; } ;;
       id|thread|reply_to|cancels)
-                [[ "$raw" =~ ^[0-7][0-9A-HJKMNP-TV-Z]{25}$ ]] \
-                  || { _env_err "$f: $key must be a 26-char Crockford ULID (got '$raw')"; bad=1; } ;;
+                if [[ "$raw" =~ ^[0-7][0-9A-HJKMNP-TV-Z]{25}$ ]]; then :
+                elif [ "$mode" = reader ] && [ "$schema" = 1 ] && [[ "$raw" =~ ^[0-9]{1,8}$ ]]; then
+                  : # a pre-ULID identifier or reference: already published, unrewritable,
+                    # and `reply_to` needs it as much as `id` does
+                else
+                  _env_err "$f: $key must be a 26-char Crockford ULID (got '$raw')"; bad=1
+                fi ;;
       from|to)  [[ "$raw" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { _env_err "$f: $key: bad kind '$raw'"; bad=1; } ;;
       from_agent|to_agent)
                 [[ "$raw" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { _env_err "$f: $key: bad participant id '$raw'"; bad=1; } ;;
@@ -248,6 +317,10 @@ EOF
   for key in $required; do
     _env_has "$key" "$seen" || { _env_err "$f: required key '$key' is missing (schema $schema)"; bad=1; }
   done
+  # A failed scan leaves NOTHING behind. Fields accumulated before the first problem are
+  # a partial decode, and a caller reading them would be acting on a file this function
+  # just refused.
+  [ "$bad" = 0 ] || _env_scan_fail
   return "$bad"
 }
 
