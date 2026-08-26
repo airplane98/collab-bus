@@ -5,6 +5,11 @@ description: Scaffold collab/ + PROTOCOL in the current project and wire the pee
 Set up the collab-bus in **this** project so Claude Code and a peer AI CLI can
 collaborate over herdr. Peer name from `$1` (default `codex`).
 
+The file scaffolding lives in `scripts/bootstrap.sh` (provider-neutral, so the peer can
+set a bus up too). **Call it — do not re-implement it here**, or the two paths drift.
+What this command adds on top is the part needing judgement: wiring the peer as a herdr
+agent, the onboarding message, and the handshake.
+
 1. **Check herdr.** `herdr status` must show `server: status: running`. If herdr is
    missing, tell the user to install it (https://herdr.dev) — collab-bus ≥0.2 needs
    it, and collab-bus ≥0.4 needs **herdr ≥ 0.8** (`agent wait`, `pane current`,
@@ -15,30 +20,35 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
    - `KIND` = the herdr agent kind for `PEER` (usually the same word; must be one of
      the kinds `herdr agent start --help` lists).
    - `NAME` = `<KIND>-<your tab_id with the colon dropped>`, e.g. `codex-w3t6`
-     (computed in step 5 once you know your tab). herdr live-agent names are
+     (computed in step 4 once you know your tab). herdr live-agent names are
      **workspace-unique**: a bare `codex` collides the moment a second tab runs
      init, so the name must be pair-scoped. Keep it `[a-z][a-z0-9_-]{0,31}`.
-   - `PROJECT` = basename of the git toplevel (`git rev-parse --show-toplevel`), else cwd.
 
-3. **Re-run on an existing project = migration, not re-scaffold.** If `collab/`
-   already exists: update the vendored scripts
-   (`mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/publish.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
-   — the `mkdir -p` matters: a v0.2 project has no `collab/bin/` yet; publish.sh is
-   new in v0.6, so a v0.3–v0.5 project gains it here),
-   then **patch** the existing PROTOCOL.md in place — the id-allocation, pair-routing,
-   and transport sections (any line having an agent bare-prompt the other side must
-   route through `collab/bin/knock.sh`), plus its recorded plugin version — and skip
-   the scaffold/onboarding steps below. Never overwrite a PROTOCOL.md wholesale:
-   it usually carries project-specific customizations.
-
-4. **Scaffold** (idempotent — don't clobber existing message files):
+3. **Scaffold (or migrate) the bus — one command:**
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap.sh" <PEER>
    ```
-   collab/inbox/to/<PEER>/   collab/inbox/to/claude/   collab/inbox/archive/
-   collab/reviews/           collab/tasks/
-   ```
-   Add a `.gitkeep` in each so the structure survives a clone.
+   **Its output tells you which of two paths you are on — they do not continue the same
+   way.** Read it before doing anything else.
 
-5. **Wire the peer as a herdr agent.** Note its `pane_id` for *this session only* —
+   - **`scaffolded …` (fresh project)** → it created `collab/inbox/to/{claude,<PEER>}/`,
+     `inbox/archive/`, `reviews/`, `tasks/` (each with `.gitkeep`), vendored
+     `collab/bin/{next-id,publish,knock}.sh` (the peer CLI has no `CLAUDE_PLUGIN_ROOT`,
+     so both sides must call one copy), and rendered `collab/PROTOCOL.md` stamped with
+     the plugin version. **Continue with steps 4–6.**
+
+   - **`migrated …` (the project already had a bus)** → it re-vendored `collab/bin/`
+     only, deliberately leaving `PROTOCOL.md` and every message file alone. Now
+     **patch that PROTOCOL.md in place** where it disagrees with this version (id
+     allocation, both-directions-through-`knock.sh` transport, the version line) —
+     never regenerate it wholesale, it usually carries project-specific edits. Then:
+     if the peer is not currently wired as a herdr agent in your tab, do step 4 to wire
+     it — **and then stop. Always skip steps 5–6.** The pair is already onboarded;
+     re-sending an onboarding message and re-running the handshake would duplicate work
+     (and there is no new `$DEST` for step 6 to name). Re-onboard only if the human
+     explicitly asks.
+
+4. **Wire the peer as a herdr agent.** Note its `pane_id` for *this session only* —
    do **not** bake it into PROTOCOL.md. With more than one pair in the workspace a
    stored pane_id points at somebody else's agent; the template therefore tells
    agents to resolve by `tab_id` every round.
@@ -66,32 +76,22 @@ collaborate over herdr. Peer name from `$1` (default `codex`).
      `herdr agent rename <pane_id> <NAME>` (the pair-scoped name — renaming two
      pairs' peers to the same bare `<PEER>` would defeat the point).
 
-6. **Write `collab/PROTOCOL.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/PROTOCOL.template.md`,
-   substituting `{{PROJECT}}` and `{{PEER}}`. (`{{TARGET}}` is gone — coordinates are
-   resolved dynamically, not stored.) Also vendor the allocator, the publish
-   script, AND the knock script into the project so the peer CLI — which has no
-   `CLAUDE_PLUGIN_ROOT` — calls the same entrypoints (the reverse knock needs the
-   same pre-settle guard, and the peer must publish atomically too, or the turn
-   race / empty-message race survives in the peer → Claude direction):
-   `mkdir -p collab/bin && cp "${CLAUDE_PLUGIN_ROOT}/scripts/next-id.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/publish.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" collab/bin/`
-   and record the plugin version they came from in PROTOCOL.md.
-
-7. **Write the onboarding message** via the allocator (never a hardcoded `0001`):
+5. **Write the onboarding message** via the allocator (never a hardcoded `0001`):
    `DRAFT=$(collab/bin/next-id.sh <PEER> onboarding <your-tab-id>)` → write the body
    into `$DRAFT` with `pair: <your tab_id>` in the frontmatter → publish it
    `DEST=$(collab/bin/publish.sh "$DRAFT")`. The inbox may not be empty, so do not
    assume any particular number — and do not tell the peer to reply with a specific
    id either; ask it to allocate its own and reply with `reply_to: <your id>`
    (frontmatter per PROTOCOL, `type: task`, `status: open`) instructing the peer to:
-   read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; confirm its role
-   as reviewer; then reply into `collab/inbox/to/claude/` using **its own
+   read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; confirm the role
+   it is taking this round; then reply into `collab/inbox/to/claude/` using **its own
    next-id.sh + publish.sh** (never a fixed number, and publish so its reply is
    never read half-written) with `reply_to: <the onboarding id you just got>`
    and `pair: <your tab_id>` — its stack summary + whether it can run git/tests —
    and archive the onboarding message.
 
-8. **Kick off the handshake** (only if the peer agent is already detected): knock the
-   **pane_id resolved in step 5** and name the **actual file** written in step 7 —
+6. **Kick off the handshake** (only if the peer agent is already detected): knock the
+   **pane_id resolved in step 4** and name the **actual file** written in step 5 —
    `"${CLAUDE_PLUGIN_ROOT}/scripts/knock.sh" <peer-pane-id> "Handshake: process $DEST"` —
    which submits and waits for the peer's turn. Then find the reply by matching
    `pair` + `reply_to`, never by guessing a file number, and archive per PROTOCOL.

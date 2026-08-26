@@ -1,5 +1,9 @@
 # {{PROJECT}} ⇄ {{PEER}} 協作協定 (collab-bus PROTOCOL)
 
+> 由 collab-bus **{{VERSION}}** 的範本產生。`collab/bin/` 的腳本也是同一版 vendored 過來的。
+> 升級 collab-bus 後**重跑 bootstrap 只會更新 `collab/bin/`,不會覆寫本檔**——本檔請
+> 就地修補(它可能帶有專案自訂內容),並更新這行版本。
+
 兩個 AI CLI（Claude Code + {{PEER}}）共享這個 repo。**訊息內容 + 審計軌跡**走檔案
 （`collab/inbox/`）；**傳輸與「對方跑完沒」**走 **herdr**——**雙方敲門都用
 `collab/bin/knock.sh`**（先 `agent wait` 把對方進行中的一輪等完，再 `agent prompt
@@ -8,10 +12,24 @@
 
 ## 角色分工
 
-- **Claude Code = orchestrator**：規劃、拆任務、實作、開 branch；把要 review / 第二意見的東西寫成訊息丟給 {{PEER}}。
-- **{{PEER}} = reviewer / 糾錯 / 獨立第二意見**：讀訊息與 diff，review、抓 bug、挑架構；**不直接改預設分支**，修改建議寫成訊息回丟。
+**這是常見分工,不是機制限制——任一方都可以發起。**
 
-> 分工可由人類隨時翻轉；翻轉時更新本節。
+- **Claude Code = orchestrator**（常見情形）：規劃、拆任務、實作、開 branch；把要 review / 第二意見的東西寫成訊息丟給 {{PEER}}。
+- **{{PEER}} = reviewer / 糾錯 / 獨立第二意見**（常見情形）：讀訊息與 diff，review、抓 bug、挑架構；**不直接改預設分支**，修改建議寫成訊息回丟。
+
+> **角色可兌換。** 傳輸與訊息格式完全對稱:`from`/`to` 是欄位、敲門雙向、雙方呼叫
+> 同一份 `collab/bin/`。所以 {{PEER}} 也可以當**發起方**,請 Claude review 它的東西:
+>
+> ```bash
+> # {{PEER}} 發起（方向與上面的範例相反,流程一模一樣）
+> DRAFT=$(collab/bin/next-id.sh claude my-proposal w3:t3)
+> #   …寫入 frontmatter: from: {{PEER}} / to: claude / type: review-request / pair: w3:t3…
+> DEST=$(collab/bin/publish.sh "$DRAFT")
+> collab/bin/knock.sh <claude_pane_id> "process $DEST"
+> ```
+>
+> ⚠️ 但**別在對方正同步等你 settle 時用同步 knock 回敲**——那會死鎖,見下面
+> 「非同步敲門」節。人類也可隨時指定分工；固定翻轉時更新本節。
 
 ## 目錄結構
 
@@ -39,13 +57,17 @@ collab/
 > # 雙方都用專案內的同一個入口（peer CLI 沒有 CLAUDE_PLUGIN_ROOT）
 > DRAFT=$(collab/bin/next-id.sh {{PEER}} review-my-topic w3:t3)   # 回傳 .md.part 草稿
 > # …把完整內容寫進 $DRAFT…
-> DEST=$(collab/bin/publish.sh "$DRAFT")   # 原子 rename 成最終 .md
+> DEST=$(collab/bin/publish.sh "$DRAFT")   # 原子 no-replace link 成最終 .md
 > ```
 >
 > **v0.6：先寫草稿，再 publish（原子上架）。** `next-id.sh` 回傳的是**草稿**路徑
 > （`.<ULID>-…md.part`，點開頭、`.part` 結尾，收件匣掃描看不到），不是最終訊息。
-> 寫完內容後用 `publish.sh` 原子 rename 成 `<ULID>-…md`——**最終 .md 只透過這個
-> rename 出現**，所以收訊方永遠不會讀到「已佔號但還沒填內容」的空訊息（本專案實際
+> 寫完內容後用 `publish.sh` 上架成 `<ULID>-…md`:它用 **exact two-path 的 `link`
+> utility 做原子 no-replace hard link**(**不是** `ln`——`ln SOURCE DIR` 會把檔案連進
+> 目錄裡;也不是 rename,因為沒有可攜的 no-replace rename),連成功後才 unlink 草稿。
+> 目的地已存在(檔案／目錄／symlink,含 dangling)時 `link()` 以 EEXIST **原子失敗**,
+> 所以既有訊息永遠不會被覆寫。**最終 .md 只透過這一步出現**,所以收訊方永遠不會讀到
+> 「已佔號但還沒填內容」的空訊息（本專案實際
 > 踩過空回覆檔）。`publish.sh` 會拒絕空草稿，別在寫內容前就 publish。
 > **v0.5 起 id 是 ULID**（48-bit 毫秒時間戳 + 80 隨機位元，Crockford base32，
 > 26 字元），**不再是共享計數器，因此沒有鎖**。ULID 不需要任何協調就唯一：兩個
@@ -55,8 +77,9 @@ collab/
 > `/tmp` 鎖路徑導出全部**已刪除**。時間戳是高位前綴，所以檔名仍照時間排序；tab 與
 > slug 仍在後面，人類照樣讀得懂。
 >
-> **仍保留的防覆寫**：`next-id.sh` 用 exclusive create（`noclobber`）建空檔——
-> ULID 撞號機率是天文級小，但這一層零成本，也順手擋掉同步而來的同名檔。
+> **兩層防覆寫**：`next-id.sh` 用 exclusive create（`noclobber`）建**草稿**;
+> `publish.sh` 則用上面說的 no-replace `link` 保護**最終檔名**。ULID 撞號機率是天文級
+> 小，但這兩層都零成本，也順手擋掉同步而來的同名檔。
 >
 > ⚠️ **跨機器仍非嚴格單調。** ULID 保證唯一，但兩台機器時鐘不完全同步時，時間
 > 排序只精確到毫秒級；若某流程需要跨機器**嚴格單調**序號，ULID（和舊計數器一樣）
@@ -80,7 +103,7 @@ status: open            # open | done
 ## 收發流程（一輪）
 
 1. **寫 + 上架**：發訊方 `next-id.sh` 取草稿路徑 → 把完整內容（含 `status: open`）
-   寫進草稿 → `publish.sh` 原子 rename 成最終 `.md`（見上「先寫草稿，再 publish」）。
+   寫進草稿 → `publish.sh` 原子上架成最終 `.md`（見上「先寫草稿，再 publish」）。
 2. **敲門（先等，再送+等）**：先依「herdr 座標」那節**動態解析出對方的 pane_id**，
    再跑 `collab/bin/knock.sh <對方_pane_id> "<一句話，並指名檔案路徑>"`（雙方共用
    這一個入口，方向相反也一樣）。

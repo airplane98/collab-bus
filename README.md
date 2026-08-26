@@ -48,6 +48,24 @@ herdr is agent-aware: it knows each agent's semantic state (`idle`/`working`/`bl
 
 Requires **[herdr](https://herdr.dev)** (`curl`/Homebrew/Nix) and a second AI CLI (e.g. `codex`).
 
+### Setting a bus up *without* Claude Code
+
+The plugin format is Claude Code's, but nothing about the bus is. `bootstrap.sh` is plain
+bash and does all the file setup, so the peer — or a human — can start a bus:
+
+```
+git clone https://github.com/airplane98/collab-bus
+cd <your project>
+/path/to/collab-bus/plugins/collab-bus/scripts/bootstrap.sh codex
+```
+
+That scaffolds `collab/`, vendors `collab/bin/{next-id,publish,knock}.sh`, and renders
+`collab/PROTOCOL.md` — everything either agent needs. Re-running it on a project that
+already has a bus **migrates** instead: it refreshes `collab/bin/` and leaves your
+PROTOCOL.md and messages untouched. `/collab-bus:init` calls this same script and then
+adds the parts that need an agent: wiring the peer in herdr, the onboarding message, and
+the handshake.
+
 ## Use
 
 ```
@@ -108,10 +126,11 @@ plugins/collab-bus/
 ├── .claude-plugin/plugin.json
 ├── skills/collab/SKILL.md          # the collaboration workflow (either side may lead)
 ├── commands/{init,send,status}.md  # /collab-bus:* commands
+├── scripts/bootstrap.sh            # provider-neutral setup/migrate (init calls this)
 ├── scripts/next-id.sh              # allocate a message: mint a ULID, create a .md.part draft
 ├── scripts/publish.sh              # atomic publish: rename the draft to the final .md
-├── scripts/knock.sh                # herdr transport: agent prompt --wait
-└── templates/PROTOCOL.template.md  # per-project protocol, filled by init
+├── scripts/knock.sh                # herdr transport: agent prompt --wait (+ --submit-only)
+└── templates/PROTOCOL.template.md  # per-project protocol, rendered by bootstrap.sh
 ```
 
 ## License
