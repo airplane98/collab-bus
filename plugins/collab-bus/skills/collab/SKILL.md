@@ -119,6 +119,44 @@ A complete collaboration is usually: Claude proposes → peer reviews → Claude
 changes + tests → peer re-reviews and signs off → Claude applies any nits. Each round
 is one knock; drive them in sequence.
 
+## Asynchronous mode — `--submit-only` (v0.6.1, for symmetric / mesh use)
+
+The default knock is a synchronous RPC: it settles the peer, submits, and **blocks
+until the peer's turn settles** — perfect for "I ask, I wait, I read your reply". It has
+one hard limit: **you cannot use it to answer a peer that is currently waiting on you.**
+While A synchronously waits on B, if B knocks A back with the default mode, both block
+forever (a wait-cycle deadlock). This bites the moment roles are symmetric — either side
+can initiate — or in a mesh.
+
+The fix is to split "send" and "receive" so both are asynchronous:
+
+- **Send without waiting**: `"$BIN/knock.sh" --submit-only <peer-pane-id> "<nudge>"`.
+  It skips the pre-settle and drops `--wait`: it returns as soon as herdr **accepts**
+  the submission (stderr prints `submitted, not settled`), and does **not** wait for the
+  peer to start, finish, or reply. A probe confirmed a no-wait submit to a *working* peer
+  is accepted and queued after its current turn — not dropped, not steered. herdr still
+  rejects a blocked peer (`agent_blocked`), which passes straight through.
+- **Receive by reconciling your inbox at turn start**: because the nudge is only a
+  best-effort wakeup (and herdr's turn boundaries are fuzzy — you cannot detect a queued
+  message by watching for a new `working` turn), **the durable inbox file is the source
+  of truth**. So at the *start* of any collab round — before doing new work — drain your
+  own inbox: process every `inbox/to/claude/*.md` whose `pair` matches your tab and whose
+  `status` is `open`. This is turn-start reconciliation, not background polling: a lost or
+  late nudge is recovered because the message file is still there.
+- **At-least-once, idempotent**: a message can be processed more than once. The sharpest
+  reason is a crash window, not the double discovery path: if you finish a message's side
+  effects but are interrupted **before** archiving it, the next round still sees the same
+  `open` id and would redo it. So de-duplicate side effects on `id` / `reply_to`, and
+  **archive last** — an archived id is never reprocessed. collab-bus has no daemon, so if
+  an agent is never activated again nothing runs; there is no eventual-processing guarantee.
+- **Default stays synchronous.** Use the plain (blocking) knock unless you are in a
+  wait-cycle or a mesh — the completion guarantee is the safer default, and giving it up
+  is an explicit `--submit-only`.
+
+**Wait-cycle rule**: if the peer's current turn may be waiting on *you* to settle, never
+answer with a synchronous knock — publish your reply and either `--submit-only` nudge, or
+just publish and let the peer's next-turn reconciliation pick it up.
+
 ## Why herdr (vs the old tmux bus)
 
 herdr is *agent-aware*, which removes every failure mode of raw tmux send-keys:

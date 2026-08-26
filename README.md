@@ -74,6 +74,11 @@ bundled `collab` skill drives the write → knock → read → archive loop.
   renames it to the final `<ULID>-…md`. A same-dir rename is atomic, so a receiver
   scanning the inbox never reads a reserved-but-empty message. publish.sh refuses a
   0-byte draft — the last guard against shipping an empty message.
+- **Async knock** (v0.6.1): `knock.sh --submit-only` fires a nudge and returns as
+  soon as herdr accepts it (no pre-settle, no `--wait`) — for symmetric / mesh use
+  where a synchronous reply would deadlock a peer that is waiting on you. The
+  receiver reconciles its inbox at turn start (durable files, at-least-once), so a
+  best-effort nudge is enough. The default knock stays synchronous.
 - **Protocol**: `collab/PROTOCOL.md` (written by `init`) is the per-project contract.
 
 ## When to use this vs a review plugin

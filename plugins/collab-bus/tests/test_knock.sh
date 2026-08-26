@@ -10,6 +10,9 @@
 #   4. unparseable pre-wait → exit 4 (fail closed), no prompt (python3 only:
 #      without python3 knock deliberately falls back to the substring match,
 #      which cannot detect garbage — that trade is documented in knock.sh)
+#   5. --submit-only        → NO agent wait, prompt WITHOUT --wait/--timeout,
+#      accepted immediately, `submitted, not settled` on stderr (v0.6.1)
+#   6. --submit-only blocked → herdr's agent_blocked passes through, no false ok
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,7 +39,10 @@ case "$1 $2" in
       garbage) echo 'not json at all' ;;
     esac ;;
   "agent prompt")
-    echo '{"id":"t","result":{"agent":{"agent_status":"idle"},"type":"agent_prompted"}}' ;;
+    case "${HERDR_STUB_MODE:?}" in
+      promptblocked) echo '{"error":{"code":"agent_blocked"},"id":"t"}' >&2; exit 7 ;;
+      *) echo '{"id":"t","result":{"agent":{"agent_status":"working"},"type":"agent_prompted"}}' ;;
+    esac ;;
 esac
 exit 0
 EOF
@@ -45,6 +51,8 @@ export PATH="$tmp/bin:$PATH"
 export HERDR_STUB_LOG="$tmp/calls.log"
 
 run(){ : >"$HERDR_STUB_LOG"; HERDR_STUB_MODE="$1" bash "$KNOCK" w9:p9 "test nudge" >"$tmp/out" 2>"$tmp/err"; echo $?; }
+# runk: like run but pass arbitrary knock args (for --submit-only).
+runk(){ : >"$HERDR_STUB_LOG"; local m="$1"; shift; HERDR_STUB_MODE="$m" bash "$KNOCK" "$@" >"$tmp/out" 2>"$tmp/err"; echo $?; }
 
 rc="$(run idle)"
 if [ "$rc" = 0 ] && grep -q "^agent prompt" "$HERDR_STUB_LOG" && grep -q agent_prompted "$tmp/out"; then
@@ -69,6 +77,27 @@ if command -v python3 >/dev/null 2>&1; then
 else
   echo "  skip - unparseable case needs python3"
 fi
+
+# 5. --submit-only: no pre-settle, prompt carries no --wait/--timeout, accepted.
+rc="$(runk idle --submit-only w9:p9 "n")"
+if [ "$rc" = 0 ] \
+   && ! grep -q "^agent wait" "$HERDR_STUB_LOG" \
+   && grep -q "^agent prompt" "$HERDR_STUB_LOG" \
+   && ! grep -qE "^agent prompt.*--wait" "$HERDR_STUB_LOG" \
+   && ! grep -qE "^agent prompt.*--timeout" "$HERDR_STUB_LOG" \
+   && grep -q agent_prompted "$tmp/out" \
+   && grep -q "submitted, not settled" "$tmp/err"; then
+  ok "submit-only: no agent wait, prompt without --wait/--timeout, accepted + marker"
+else ng "submit-only basic (rc=$rc)"; fi
+
+# 6. --submit-only to a peer herdr rejects: agent_blocked passes through, no marker.
+rc="$(runk promptblocked --submit-only w9:p9 "n")"
+if [ "$rc" = 7 ] \
+   && ! grep -q "^agent wait" "$HERDR_STUB_LOG" \
+   && grep -q agent_blocked "$tmp/err" \
+   && ! grep -q "submitted, not settled" "$tmp/err"; then
+  ok "submit-only: herdr's exact rc (7) passes through, no false 'submitted'"
+else ng "submit-only blocked passthrough (rc=$rc, want 7)"; fi
 
 echo "knock: $((t-f))/$t passed"
 [ "$f" -eq 0 ]

@@ -183,3 +183,32 @@ herdr agent list | jq -r --arg me "<my-session-id>" '.result.agents[]
 
 **誤敲別組時**：立刻停止該輪、不要重試，並告知人類敲到了哪個 pane——
 對方那組可能正在跑別的任務。
+
+### 非同步敲門（v0.6.1，對稱／網狀用）
+
+預設 knock 是同步 RPC（送+等對方 settle），適合「我問、我等、我讀回覆」。但它有一條
+硬限制:**不能用來回覆一個正在同步等你的對方**——A 同步等 B 時,B 若用預設模式回敲 A,
+兩邊互等成死鎖(wait-cycle)。角色對稱或網狀時一定會遇到。解法是把「送」和「收」都
+非同步化:
+
+- **送(不等)**:`collab/bin/knock.sh --submit-only <對方_pane_id> "<nudge>"`。跳過
+  pre-settle、不帶 `--wait`,herdr **接受** submission 就返回(stderr 印 `submitted,
+  not settled`),不等對方開始／完成／回覆。實測確認:對 working peer 的 no-wait submit
+  會被接受並排在它當前 turn 之後(不丟、不打斷);blocked peer 仍會被 herdr 拒
+  (`agent_blocked`,原樣透傳)。
+- **收(每輪開場先對帳自己的收件匣)**:nudge 只是 best-effort 喚醒,而且 herdr 的 turn
+  邊界模糊(無法靠「等對方再次 working」偵測排隊訊息),所以**durable 訊息檔才是事實
+  來源**。每次你**開始一輪協作前**,先掃自己 `inbox/to/<自己>/` 裡 `pair` 符合、
+  `status: open` 的訊息並處理,再做新任務。這是 turn-start 對帳,不是背景輪詢:遺失或
+  延遲的 nudge 靠檔案補回。
+- **at-least-once、冪等**:一則訊息可能被處理多次。最關鍵的原因是 crash window(不只是
+  「nudge + 對帳」兩條發現路徑):若你做完副作用、但在**歸檔前**中斷,下一輪會再看到同一個
+  `open` id 而重做。所以副作用要用 `id`／`reply_to` 去重,**歸檔放最後**(已歸檔的 id 不
+  重複處理)。collab-bus 沒有 daemon,對方若永遠不再被喚醒就不會處理——沒有 eventual-
+  processing 保證。
+- **預設維持同步**:非 wait-cycle／非網狀場景一律用預設(阻塞)knock,完成保證較安全;
+  放棄它要顯式 `--submit-only`。
+
+**wait-cycle 規則**:若對方當前 turn 可能正在等**你** settle,**絕不要用同步 knock 回敲**
+(會死鎖)——publish 你的回覆後,用 `--submit-only` 喚醒,或只 publish 讓對方下一輪
+開場對帳時自己撿。

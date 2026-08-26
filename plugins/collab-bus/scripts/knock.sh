@@ -12,7 +12,7 @@
 # Replaces the old tmux `notify.sh` (send-keys + manual Enter + file polling):
 # herdr reports when the peer's turn settles, so there is nothing to poll.
 #
-# Usage: knock.sh <peer> [nudge]
+# Usage: knock.sh [--submit-only] <peer> [nudge]
 #   <peer>  herdr agent: a pane_id (e.g. w1:p2), a unique agent name, or the
 #           detected kind (e.g. "codex"). Best-effort resolved to a pane_id via
 #           `agent list` (needs python3); otherwise passed straight to herdr.
@@ -37,16 +37,31 @@
 # Nonzero exit: herdr missing (1), bad usage (2), peer already blocked before
 # the prompt (3), unparseable pre-wait result (4); an unresolved target or a
 # stalled/timeout prompt surfaces herdr's error JSON with herdr's exit code.
+#
+# SUBMIT-ONLY (v0.6.1, for symmetric / mesh use): `knock.sh --submit-only <peer>`
+# skips the pre-settle AND drops `--wait`. It fires the nudge and returns as soon
+# as herdr ACCEPTS the submission — it does NOT wait for the peer to start,
+# finish, or write a reply. Use it to break a wait-cycle deadlock: while A is
+# synchronously waiting on B, B must not reverse-knock A in the default (blocking)
+# mode — both would wait forever. A probe (2026-08-26) confirmed a no-wait prompt
+# to a WORKING peer is accepted and QUEUED after its current turn — not dropped,
+# not steered. herdr still rejects a blocked peer (agent_blocked) and surfaces
+# errors; those pass straight through. The durable inbox file is the source of
+# truth — the nudge is a best-effort wakeup, so the receiver must reconcile its
+# inbox at turn start rather than rely on this having woken it. On an accepted
+# submission stderr carries the grep-able marker `submitted, not settled`.
 
 set -uo pipefail
 
+submit_only=0
+if [ "${1:-}" = "--submit-only" ]; then submit_only=1; shift; fi
 peer="${1:-}"
 # The default deliberately does NOT say "read the newest open message": with more
 # than one Claude+peer pair sharing collab/inbox/, the newest open item may belong
 # to the other pair. Callers should pass an explicit file path.
 nudge="${2:-Act on the message addressed to you under collab/inbox/ whose \`pair\` matches your own herdr tab_id — ignore messages belonging to other pairs. Follow collab/PROTOCOL.md; write your reply file and archive the message when your turn is done. (The caller did not name a file; ask which one if it is ambiguous.)}"
 
-[[ -z "$peer" ]] && { echo "usage: knock.sh <peer|pane_id> [nudge]" >&2; exit 2; }
+[[ -z "$peer" ]] && { echo "usage: knock.sh [--submit-only] <peer|pane_id> [nudge]" >&2; exit 2; }
 command -v herdr >/dev/null 2>&1 || {
   echo "herdr not found. collab-bus >=0.2 runs on herdr (https://herdr.dev)." >&2
   exit 1
@@ -74,6 +89,22 @@ hits = [a for a in agents if match(a)]
 print(hits[0]["pane_id"] if len(hits) == 1 else "")
 ' "$peer" 2>/dev/null || true)"
   [[ -n "$resolved" ]] && target="$resolved"
+fi
+
+if [ "$submit_only" -eq 1 ]; then
+  # Async submit: skip the pre-settle (the wait-cycle's first blocking edge) and
+  # drop --wait. Return the moment herdr accepts the submission. The probe
+  # confirmed a no-wait prompt to a working peer is accepted and queued, not
+  # dropped or steered. herdr's stdout (agent_prompted JSON) and its errors
+  # (incl. agent_blocked for a blocked peer) pass through; we keep the exit code.
+  # The `submitted, not settled` marker prints ONLY on an accepted submission —
+  # a rejected one keeps herdr's nonzero code and no false "submitted".
+  echo "knock → $peer (target=$target): submit-only (no pre-settle, no --wait)" >&2
+  herdr agent prompt "$target" "$nudge"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "submitted, not settled — herdr accepted the submission; the reply is not settled and lands in the inbox, so reconcile there rather than waiting here." >&2
+  fi
+  exit "$rc"
 fi
 
 wait_ms="${COLLAB_WAIT_MS:-600000}"
