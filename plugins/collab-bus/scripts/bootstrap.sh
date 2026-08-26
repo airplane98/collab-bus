@@ -44,7 +44,7 @@ MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
 # publish.sh REQUIRES lib/envelope.sh — vendoring the script without its gate would
 # leave a bus that silently accepts unvalidated messages, so the library and the two
 # envelope CLIs ship together with the rest. Entries may contain a directory component.
-VENDOR=(next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh lib/envelope.sh)
+VENDOR=(next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh lib/envelope.sh lib/manifest.sh)
 
 usage() { echo "usage: bootstrap.sh [peer] [--dir <project>]   (peer defaults to codex)" >&2; }
 
@@ -283,13 +283,71 @@ if ! command -v herdr >/dev/null 2>&1; then
   echo "warning: herdr not found — collab/bin/knock.sh cannot run until you install it (https://herdr.dev)." >&2
 fi
 
+# Two phases, because "validate before writing" has to mean before EVERY write, not just
+# before the registry's own. A peer name that cannot become a legal participant id used to
+# fail only after the tree, manifest, scripts and PROTOCOL had already been created (fresh)
+# or after the vendored scripts had been replaced (migrate).
+REG_IDS=""; REG_KINDS=""
+plan_registry() { # <peer> — READ ONLY: derives ids and validates whatever already exists
+  local peer="$1" lower id kind i=0
+  lower="$(printf '%s' "$peer" | tr 'A-Z' 'a-z')"
+  REG_IDS="claude-primary $lower-primary"
+  REG_KINDS="claude $lower"
+  for id in $REG_IDS; do
+    i=$((i+1)); kind="$(printf '%s' "$REG_KINDS" | cut -d' ' -f$i)"
+    if ! [[ "$id" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
+      echo "error: peer '$peer' does not yield a legal participant id (got '$id')" >&2
+      echo "       register one by hand later: collab/bin/participant.sh register <id> --kind $kind" >&2
+      exit 1
+    fi
+    # Existing artifacts are validated here — including the expected kind, and refusing a
+    # symlink outright rather than through a validator that would follow it.
+    if [ -L "$COLLAB/participants/$id.json" ]; then
+      echo "error: collab/participants/$id.json is a symlink — refusing" >&2; exit 1
+    fi
+    if [ -e "$COLLAB/participants/$id.json" ]; then
+      # `validate` is read-only. Using `register` to check the kind made the "plan" phase
+      # stage and link files, and it also compared the ALIAS — which bootstrap does not
+      # own: a legitimate hand-set alias made migrate fail with a bogus kind-mismatch.
+      COLLAB_ROOT="$COLLAB" "$SELF/participant.sh" validate "$id" --kind "$kind" \
+        || { echo "error: existing participant $id is unreadable, or is not kind '$kind' — fix it by hand" >&2; exit 1; }
+    fi
+  done
+  for d in participants bindings; do
+    reject_symlink "$COLLAB/$d" "collab/$d"
+    [ -e "$COLLAB/$d" ] && [ ! -d "$COLLAB/$d" ] \
+      && { echo "error: $COLLAB/$d exists and is not a directory" >&2; exit 1; }
+  done
+  return 0
+}
+
+commit_registry() { # create-missing-only; everything was validated by plan_registry
+  local d id kind i=0
+  # Re-check destination safety here too: plan ran before the tree existed, and something
+  # could have appeared in between.
+  for d in participants bindings; do
+    reject_symlink "$COLLAB/$d" "collab/$d"
+  done
+  for d in participants bindings; do
+    mkdir -p "$COLLAB/$d" || { echo "error: could not create $COLLAB/$d" >&2; exit 1; }
+  done
+  for id in $REG_IDS; do
+    i=$((i+1)); kind="$(printf '%s' "$REG_KINDS" | cut -d' ' -f$i)"
+    [ -e "$COLLAB/participants/$id.json" ] && continue
+    COLLAB_ROOT="$COLLAB" "$SELF/participant.sh" register "$id" --kind "$kind" >/dev/null \
+      || { echo "error: could not declare participant $id" >&2; exit 1; }
+  done
+}
+
 if [ -e "$COLLAB" ] || [ -L "$COLLAB" ]; then
   # --- migrate ---------------------------------------------------------------
   reject_symlink "$COLLAB" "collab"
   [ -d "$COLLAB" ] || { echo "error: $COLLAB exists but is not a directory" >&2; exit 1; }
   plan_bus_json "$(basename "$DIR")"      # validated BEFORE any script is replaced
+  plan_registry "$PEER"                   # …and so is the registry
   vendor_scripts
   pid="$(commit_bus_json)"
+  commit_registry                  # §9: migrate creates participants/ and bindings/ when missing
   echo "bus.json: project_id $pid, schemas read=[$BUS_SCHEMAS_READ] write=$BUS_SCHEMAS_WRITE min_reader=$BUS_PLAN_MIN"
   echo "migrated: re-vendored ${#VENDOR[@]} scripts into collab/bin/ at $VERSION (${VENDOR[*]})"
   if [ -f "$COLLAB/PROTOCOL.md" ]; then
@@ -310,7 +368,11 @@ else
   PROJECT="$(basename "$DIR")"
 fi
 
-for d in "inbox/to/$PEER" "inbox/to/claude" "inbox/archive" "reviews" "tasks"; do
+# participants/ and bindings/ exist from the start: a logical endpoint does not need a
+# live agent, so bootstrap can pre-declare the pair even before either side is wired.
+plan_registry "$PEER"     # nothing below runs if the peer cannot yield a legal id
+for d in "inbox/to/$PEER" "inbox/to/claude" "inbox/archive" "reviews" "tasks" \
+         "participants" "bindings"; do
   mkdir -p "$COLLAB/$d"
   : > "$COLLAB/$d/.gitkeep"
 done
@@ -338,12 +400,20 @@ if ! ( set -o noclobber; printf '%s\n' "$content" > "$COLLAB/PROTOCOL.md" ) 2>/d
   echo "error: $COLLAB/PROTOCOL.md already exists — refusing to overwrite" >&2; exit 1
 fi
 
+
+# Pre-declare the two logical endpoints. `register` is no-replace and idempotent, so this
+# never disturbs an existing registry — and scaffolding an endpoint is NOT the same as
+# binding it: an agent still has to claim its own id from its own pane.
+commit_registry
+
 cat <<EOF
 scaffolded collab-bus $VERSION in $DIR
   collab/PROTOCOL.md              the shared contract (Claude Code ⇄ $PEER) — read it first
   collab/bus.json                 machine-readable capabilities; project_id $pid
   collab/bin/                     next-id.sh, publish.sh, knock.sh (both sides call these)
   collab/inbox/to/{claude,$PEER}/ message boxes; collab/inbox/archive/ for processed ones
+  collab/participants/            claude-primary and $PEER-primary declared; each agent must
+                                  still run: collab/bin/participant.sh bind <its own id>
 
 next:
   1. run both agents as herdr agents in the SAME herdr tab (that tab is the pair).

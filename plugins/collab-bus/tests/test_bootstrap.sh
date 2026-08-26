@@ -669,5 +669,86 @@ after="$(cksum < "$t/collab/bus.json")"
   && ok "a huge major version is refused with no arithmetic diagnostic" \
   || bad "huge version downgraded (rc=$rc)"
 
+# --- 39. migrate creates a missing registry; existing entries are untouched --
+# The migrate branch used to return right after vendoring, so a project that predates the
+# registry never got one; and the fresh path hid every declaration failure behind `|| true`.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+idbefore="$(cksum < "$t/collab/participants/claude-primary.json")"
+rm -rf "$t/collab/participants" "$t/collab/bindings"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" = 0 ] && [ -d "$t/collab/participants" ] && [ -d "$t/collab/bindings" ] \
+  && [ -f "$t/collab/participants/codex-primary.json" ]; } \
+  && ok "migrate recreates a missing participants/ and bindings/" \
+  || bad "migrate left the registry missing (rc=$rc)"
+idafter="$(cksum < "$t/collab/participants/claude-primary.json")"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+{ [ "$idafter" = "$(cksum < "$t/collab/participants/claude-primary.json")" ]; } \
+  && ok "an existing identity is validated, never rewritten, on re-run" \
+  || bad "re-run rewrote an existing identity"
+
+# --- 40. a peer whose name is not a legal id is canonicalised, not dropped ---
+# `Gemini` is a legal inbox name but not a legal participant id; the old catch-all
+# reported the silent drop as success.
+t="$(newdir)"
+out="$(cd "$t" && bash "$BOOT" Gemini 2>&1)"; rc=$?
+{ [ "$rc" = 0 ] && [ -f "$t/collab/participants/gemini-primary.json" ]; } \
+  && ok "an uppercase peer yields a canonical lowercase participant id" \
+  || bad "peer id declaration lost (rc=$rc): $(ls "$t/collab/participants" 2>&1)"
+
+# --- 41. an illegal peer id aborts BEFORE anything is scaffolded -----------
+long="$(printf 'a%.0s' $(seq 1 64))"
+t="$(newdir)"
+out="$(cd "$t" && bash "$BOOT" "$long" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && [ ! -e "$t/collab" ]; } \
+  && ok "a peer that cannot yield a legal participant id scaffolds nothing at all" \
+  || bad "fresh left a partial tree behind (rc=$rc)"
+
+# --- 42. …and on migrate, no vendored file is touched either ---------------
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh; do
+  printf 'MARKED %s\n' "$f" > "$t/collab/bin/$f"
+done
+busbefore="$(cksum < "$t/collab/bus.json")"
+out="$(cd "$t" && bash "$BOOT" "$long" 2>&1)"; rc=$?
+intact=1
+for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh; do
+  [ "$(cat "$t/collab/bin/$f")" = "MARKED $f" ] || intact=0
+done
+{ [ "$rc" != 0 ] && [ "$intact" = 1 ] && [ "$busbefore" = "$(cksum < "$t/collab/bus.json")" ]; } \
+  && ok "an invalid registry plan aborts migrate before any vendored file or manifest changes" \
+  || bad "migrate mutated before validating (rc=$rc intact=$intact)"
+
+# --- 43. a hand-set alias on an existing identity is preserved -------------
+# bootstrap owns the id and the kind expectation, not the alias.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+rm -f "$t/collab/participants/claude-primary.json"
+(cd "$t" && COLLAB_ROOT="$t/collab" bash "$DIR/scripts/participant.sh" register claude-primary --kind claude --alias 'Claude Agent' >/dev/null 2>&1)
+before="$(cksum < "$t/collab/participants/claude-primary.json")"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" = 0 ] && [ "$before" = "$(cksum < "$t/collab/participants/claude-primary.json")" ]; } \
+  && ok "an existing identity with a custom alias is accepted and left untouched" \
+  || bad "bootstrap rejected or rewrote a legitimate custom alias (rc=$rc)"
+
+# --- 44. a wrong kind or a symlinked registry fails before any mutation ----
+r44=0
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+sed -i.bak 's/"kind": "claude"/"kind": "wrong-kind"/' "$t/collab/participants/claude-primary.json"
+rm -f "$t/collab/participants/claude-primary.json.bak"
+printf 'MARKED\n' > "$t/collab/bin/next-id.sh"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && [ "$(cat "$t/collab/bin/next-id.sh")" = "MARKED" ]; } || r44=1
+t="$(newdir)"; outside="$ROOT/regout.$$"; mkdir -p "$outside"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+rm -rf "$t/collab/participants"; ln -s "$outside" "$t/collab/participants"
+printf 'MARKED\n' > "$t/collab/bin/next-id.sh"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && [ "$(cat "$t/collab/bin/next-id.sh")" = "MARKED" ] && [ -z "$(ls -A "$outside")" ]; } || r44=1
+[ "$r44" = 0 ] && ok "a wrong kind or a symlinked participants/ fails before any file is replaced" \
+               || bad "registry preflight ran too late"
+
 [ "$fails" -eq 0 ] && { echo "bootstrap: all passed"; exit 0; }
 echo "bootstrap: $fails failed" >&2; exit 1
