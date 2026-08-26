@@ -105,6 +105,24 @@ fi
 VERSION="v$VERSION_RAW"
 
 COLLAB="$DIR/collab"
+BUSJSON="$COLLAB/bus.json"
+
+# bus.json is the MACHINE-READABLE capability manifest and is tooling-owned: unlike
+# PROTOCOL.md (prose a human maintains, which bootstrap never rewrites) this file must be
+# authoritative, so peers negotiate on facts rather than on a version somebody typed.
+# The codec lives in lib/manifest.sh — it is parsed, never grepped, because a per-key
+# search happily finds a valid-looking id inside a corrupt file and launders it.
+. "$SELF/lib/manifest.sh"
+. "$SELF/lib/envelope.sh"          # _env_has_control, for rejecting a control byte in the alias
+BUS_SCHEMAS_READ='1, 2'
+BUS_SCHEMAS_WRITE=1                # step 1 shipped the reader; writers still emit schema 1
+BUS_SCHEMAS_MIN_READER=1
+# Bind the codec's notion of "what this tooling supports" to THIS binary, unconditionally.
+# manifest.sh keeps an env-overridable default so the library stays testable, but a
+# fail-closed capability policy that an inherited environment variable can switch off is
+# not a policy: `MF_TOOLING_READ=1,2,3 bootstrap.sh` downgraded a newer manifest.
+MF_TOOLING_READ="$(printf '%s' "$BUS_SCHEMAS_READ" | tr -d ' ')"
+MF_TOOLING_WRITE="$BUS_SCHEMAS_WRITE"
 
 # Refuse to write through a symlink: `cp` follows one, so a symlinked collab/, bin/, or
 # vendored file would silently redirect writes outside the project.
@@ -114,8 +132,79 @@ reject_symlink() { # <path> <label>
 }
 
 STAGE=""
-cleanup() { [ -n "$STAGE" ] && rm -rf "$STAGE"; return 0; }
+BUS_TMP=""
+cleanup() {
+  [ -n "$STAGE" ] && rm -rf -- "$STAGE"
+  [ -n "$BUS_TMP" ] && rm -f -- "$BUS_TMP"
+  return 0
+}
 trap cleanup EXIT
+
+# plan_bus_json — decide the manifest content WITHOUT touching anything. Runs before
+# vendor_scripts so a bad manifest cannot leave half-replaced scripts behind (the failure
+# mode step 1 closed for vendored files and this reopened for the manifest).
+# Sets BUS_PLAN_ID / BUS_PLAN_ALIAS / BUS_PLAN_MIN / BUS_PLAN_EXISTS.
+plan_bus_json() { # <default-alias>
+  BUS_PLAN_ALIAS="$1"; BUS_PLAN_MIN="$BUS_SCHEMAS_MIN_READER"; BUS_PLAN_EXISTS=0
+  if [ -e "$BUSJSON" ] || [ -L "$BUSJSON" ]; then
+    reject_symlink "$BUSJSON" "collab/bus.json"
+    [ -f "$BUSJSON" ] || { echo "error: $BUSJSON exists and is not a regular file" >&2; exit 1; }
+    # Not bare: `set -e` would kill us on the very statuses we are about to branch on.
+    local mrc=0
+    MF_OUR_VERSION="$VERSION_RAW" manifest_read_strict "$BUSJSON" || mrc=$?
+    case $mrc in
+      0) : ;;
+      3) echo "error: refusing to rewrite $BUSJSON (see above)" >&2; exit 1 ;;
+      *) echo "error: $BUSJSON is not a manifest this tooling can read — fix or remove it by hand;" >&2
+         echo "       a project's identity is minted once and must not be guessed at." >&2
+         exit 1 ;;
+    esac
+    manifest_json_check "$BUSJSON" || { echo "error: $BUSJSON is not valid JSON — refusing to rewrite it" >&2; exit 1; }
+    BUS_PLAN_EXISTS=1
+    BUS_PLAN_ID="$MF_PROJECT_ID"
+    # human-owned fields survive; tooling-owned ones get refreshed below
+    BUS_PLAN_ALIAS="$MF_PROJECT_ALIAS"
+    BUS_PLAN_MIN="$MF_MIN_READER"
+  else
+    BUS_PLAN_ID="$(COLLAB_NEXT_ID_LIB=1 . "$SELF/next-id.sh" && ulid)" || {
+      echo "error: could not mint a project_id" >&2; exit 1; }
+  fi
+  if _env_has_control "$BUS_PLAN_ALIAS"; then
+    echo "error: project alias contains a control character — refusing" >&2; exit 1
+  fi
+}
+
+commit_bus_json() {
+  # The staging path goes in a GLOBAL that the existing EXIT cleanup removes with proper
+  # quoting. Interpolating it into a trap string — `trap "rm -f '$tmp'" RETURN` — makes
+  # the project's own path part of a command that gets evaluated later: a directory named
+  # `x'; touch PWNED; echo '` executed arbitrary shell AND injected text into this
+  # function's stdout, corrupting the project_id it returns.
+  BUS_TMP="$(mktemp "$COLLAB/.bus.json.XXXXXX")" || { echo "error: could not stage $BUSJSON" >&2; exit 1; }
+  local tmp="$BUS_TMP"
+  manifest_render "$BUS_PLAN_ID" "$BUS_PLAN_ALIAS" "$BUS_SCHEMAS_READ" \
+                  "$BUS_SCHEMAS_WRITE" "$BUS_PLAN_MIN" "$VERSION_RAW" > "$tmp"
+  if [ "$BUS_PLAN_EXISTS" -eq 1 ]; then
+    mv -f -- "$tmp" "$BUSJSON"; BUS_TMP=""
+  else
+    # FIRST creation is no-replace: two bootstraps racing on a fresh bus would otherwise
+    # each mint an id and the last rename would win, leaving one caller holding a project
+    # identity that no longer exists on disk. link() fails atomically if we lost.
+    if ln -- "$tmp" "$BUSJSON" 2>/dev/null; then
+      rm -f -- "$tmp"; BUS_TMP=""
+    else
+      rm -f -- "$tmp"; BUS_TMP=""
+      MF_OUR_VERSION="$VERSION_RAW" manifest_read_strict "$BUSJSON" || {
+        echo "error: lost the race to create $BUSJSON, and the winner's manifest is unreadable" >&2; exit 1; }
+      :
+      BUS_PLAN_ID="$MF_PROJECT_ID"     # adopt the winner's identity, do not invent a second
+    fi
+  fi
+  # Never trust rc alone: re-read what actually landed.
+  MF_OUR_VERSION="$VERSION_RAW" manifest_read_strict "$BUSJSON" >/dev/null || {
+    echo "error: $BUSJSON did not validate after writing" >&2; exit 1; }
+  printf '%s' "$MF_PROJECT_ID"
+}
 
 vendor_scripts() {
   reject_symlink "$COLLAB/bin" "collab/bin"
@@ -198,7 +287,10 @@ if [ -e "$COLLAB" ] || [ -L "$COLLAB" ]; then
   # --- migrate ---------------------------------------------------------------
   reject_symlink "$COLLAB" "collab"
   [ -d "$COLLAB" ] || { echo "error: $COLLAB exists but is not a directory" >&2; exit 1; }
+  plan_bus_json "$(basename "$DIR")"      # validated BEFORE any script is replaced
   vendor_scripts
+  pid="$(commit_bus_json)"
+  echo "bus.json: project_id $pid, schemas read=[$BUS_SCHEMAS_READ] write=$BUS_SCHEMAS_WRITE min_reader=$BUS_PLAN_MIN"
   echo "migrated: re-vendored ${#VENDOR[@]} scripts into collab/bin/ at $VERSION (${VENDOR[*]})"
   if [ -f "$COLLAB/PROTOCOL.md" ]; then
     echo "kept: collab/PROTOCOL.md was NOT overwritten (it may carry project-specific edits)."
@@ -228,7 +320,9 @@ if [ "$COLLAB/inbox/to/$PEER" -ef "$COLLAB/inbox/to/claude" ]; then
   echo "error: inbox/to/$PEER and inbox/to/claude are the same directory on this filesystem — pick another peer name" >&2
   exit 1
 fi
+plan_bus_json "$PROJECT"
 vendor_scripts
+pid="$(commit_bus_json)"
 
 # Substitute with bash parameter expansion, not sed: a project name containing / or &
 # would corrupt a sed replacement. Bash 5.2+ then adds its own trap — with
@@ -247,6 +341,7 @@ fi
 cat <<EOF
 scaffolded collab-bus $VERSION in $DIR
   collab/PROTOCOL.md              the shared contract (Claude Code ⇄ $PEER) — read it first
+  collab/bus.json                 machine-readable capabilities; project_id $pid
   collab/bin/                     next-id.sh, publish.sh, knock.sh (both sides call these)
   collab/inbox/to/{claude,$PEER}/ message boxes; collab/inbox/archive/ for processed ones
 

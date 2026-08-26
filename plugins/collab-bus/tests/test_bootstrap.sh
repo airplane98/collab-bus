@@ -331,5 +331,343 @@ for kind in file symlink; do
   fi
 done
 
+# --- 21. bus.json: minted once, preserved across re-runs, alias kept ---------
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+B="$t/collab/bus.json"
+pid1="$(sed -n 's/.*"project_id"[^"]*"\([^"]*\)".*/\1/p' "$B")"
+# an alias the human chose must survive a re-run; project_id must never be re-minted
+python3 - "$B" <<'PYE' 2>/dev/null || sed -i '' 's/"project_alias": "[^"]*"/"project_alias": "renamed-by-hand"/' "$B"
+import re,sys
+p=sys.argv[1]; s=open(p).read()
+open(p,'w').write(re.sub(r'"project_alias": "[^"]*"', '"project_alias": "renamed-by-hand"', s))
+PYE
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+pid2="$(sed -n 's/.*"project_id"[^"]*"\([^"]*\)".*/\1/p' "$B")"
+alias2="$(sed -n 's/.*"project_alias"[^"]*"\([^"]*\)".*/\1/p' "$B")"
+if [[ "$pid1" =~ ^[0-7][0-9A-HJKMNP-TV-Z]{25}$ ]] && [ "$pid1" = "$pid2" ] \
+   && [ "$alias2" = "renamed-by-hand" ] && grep -q '"min_reader"' "$B"; then
+  ok "bus.json: opaque project_id minted once and preserved; alias respected"
+else
+  bad "bus.json wrong (pid1=$pid1 pid2=$pid2 alias=$alias2)"
+fi
+
+# --- 21b. a deliberately raised min_reader survives a re-vendor -------------
+# Raising min_reader is the migration step that licenses dropping legacy fields; if
+# bootstrap reset it on every run, that decision would silently revert.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+sed -i '' 's/"min_reader": 1/"min_reader": 2/' "$t/collab/bus.json"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+grep -q '"min_reader": 2' "$t/collab/bus.json" \
+  && ok "a hand-raised min_reader is preserved across a re-vendor" \
+  || bad "min_reader was reset to the bootstrap default"
+
+# --- 22. an unreadable bus.json fails loud instead of being re-minted -------
+# "It exists" is not success: a manifest we cannot parse would otherwise get a SECOND
+# identity minted for the same project.
+for damage in 'garbage' '{ "project_id": "not-a-ulid" }'; do
+  t="$(newdir)"
+  (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+  printf '%s\n' "$damage" > "$t/collab/bus.json"
+  out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+  if [ "$rc" != 0 ] && printf '%s' "$out" | grep -qE "manifest|refusing"; then
+    ok "a bus.json with no readable project_id fails loud (${damage:0:18})"
+  else
+    bad "damaged bus.json was silently rewritten (rc=$rc)"
+  fi
+done
+
+# --- 23. a symlinked bus.json is refused ------------------------------------
+t="$(newdir)"; victim="$ROOT/busvictim.$$"; printf 'ORIGINAL\n' > "$victim"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+rm -f "$t/collab/bus.json"; ln -s "$victim" "$t/collab/bus.json"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && [ "$(cat "$victim")" = "ORIGINAL" ]; } \
+  && ok "a symlinked bus.json is refused and its target is untouched" \
+  || bad "symlinked bus.json followed (rc=$rc)"
+
+# --- 24. a manifest is PARSED, not grepped ---------------------------------
+# A per-key search finds a valid-looking id inside a corrupt file and launders the
+# corruption into clean JSON on the next write.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+pid="$(sed -n 's/.*"project_id"[^"]*"\([^"]*\)".*/\1/p' "$t/collab/bus.json")"
+printf 'THIS IS NOT JSON "project_id": "%s", "project_alias": "kept", "min_reader": 2 TRAILING\n' "$pid" > "$t/collab/bus.json"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && grep -q "THIS IS NOT JSON" "$t/collab/bus.json"; } \
+  && ok "a file that merely CONTAINS a valid id is rejected, not rewritten" \
+  || bad "corrupt manifest was laundered (rc=$rc)"
+
+# --- 25. a project alias needing JSON escaping round-trips ------------------
+t="$(newdir)/say "'"'"hi"'"'" & \\stuff"; mkdir -p "$t"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1); rc=$?
+if [ "$rc" = 0 ] && bash -c '. '"$DIR"'/scripts/lib/manifest.sh; manifest_json_check "$1"' _ "$t/collab/bus.json"; then
+  ok "an alias containing quotes and backslashes produces valid JSON"
+else
+  bad "alias escaping wrong (rc=$rc): $(sed -n 2,3p "$t/collab/bus.json" 2>/dev/null)"
+fi
+
+# --- 26. min_reader must name a schema this endpoint actually reads ---------
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+sed -i.bak 's/"min_reader": 1/"min_reader": 9/' "$t/collab/bus.json"; rm -f "$t/collab/bus.json.bak"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "min_reader"; } \
+  && ok "a min_reader outside schemas.read is refused as an unsatisfiable policy" \
+  || bad "unsatisfiable min_reader accepted (rc=$rc)"
+
+# --- 27. older tooling must not silently downgrade a newer manifest --------
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+sed -i.bak -e 's/"read": \[1, 2\]/"read": [1, 2, 3]/' -e 's/"write": 1/"write": 3/' \
+           -e 's/"publisher_version": "[^"]*"/"publisher_version": "9.0.0"/' "$t/collab/bus.json"
+rm -f "$t/collab/bus.json.bak"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -qi "newer\|downgrade" \
+  && grep -q '"write": 3' "$t/collab/bus.json"; } \
+  && ok "a manifest from newer tooling is left alone, not downgraded" \
+  || bad "newer manifest was downgraded (rc=$rc)"
+
+# --- 28. a bad manifest aborts BEFORE any vendored script is replaced ------
+# Validation used to run after vendor_scripts, reopening the mixed-install hole that
+# step 1 closed for the scripts themselves.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh; do
+  printf 'MARKED %s\n' "$f" > "$t/collab/bin/$f"
+done
+printf 'garbage\n' > "$t/collab/bus.json"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+intact=1
+for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh; do
+  [ "$(cat "$t/collab/bin/$f")" = "MARKED $f" ] || intact=0
+done
+{ [ "$rc" != 0 ] && [ "$intact" = 1 ]; } \
+  && ok "a bad manifest aborts before any script is replaced (no mixed install)" \
+  || bad "manifest failure left a mixed install (rc=$rc intact=$intact)"
+
+# --- 29. two concurrent first bootstraps agree on ONE project_id -----------
+# A bare "start both in the background" proves nothing: the scheduler may run them in
+# sequence and the case goes green without the windows ever overlapping. An `od` wrapper
+# that sleeps forces BOTH to be inside the mint window at once, and the oracle now
+# requires both to succeed AND to report the same non-empty id as the file.
+t="$(newdir)"
+mkdir -p "$t/collab/inbox"          # a v0.7-era bus: no bus.json yet
+slow="$ROOT/slowbin.$$"; mkdir -p "$slow"
+realod="$(command -v od)"
+cat > "$slow/od" <<SLOWOD
+#!/usr/bin/env bash
+sleep 1
+exec "$realod" "\$@"
+SLOWOD
+chmod +x "$slow/od"
+o1="$t/o1"; o2="$t/o2"
+( cd "$t" && PATH="$slow:$PATH" bash "$BOOT" codex > "$o1" 2>&1 ) & p1=$!
+( cd "$t" && PATH="$slow:$PATH" bash "$BOOT" codex > "$o2" 2>&1 ) & p2=$!
+rc1=0; wait "$p1" || rc1=$?
+rc2=0; wait "$p2" || rc2=$?
+final="$(sed -n 's/.*"project_id"[^"]*"\([^"]*\)".*/\1/p' "$t/collab/bus.json" 2>/dev/null)"
+r1="$(grep -o 'project_id [0-9A-Z]\{26\}' "$o1" | head -1 | awk '{print $2}')"
+r2="$(grep -o 'project_id [0-9A-Z]\{26\}' "$o2" | head -1 | awk '{print $2}')"
+if [ "$rc1" = 0 ] && [ "$rc2" = 0 ] \
+   && [ -n "$final" ] && [ -n "$r1" ] && [ -n "$r2" ] \
+   && [ "$r1" = "$final" ] && [ "$r2" = "$final" ]; then
+  ok "a forced concurrent first bootstrap converges: both report $final"
+else
+  bad "mint-once race (rc1=$rc1 rc2=$rc2 r1='$r1' r2='$r2' final='$final')"
+fi
+
+# --- 30. a hostile project path cannot inject shell or corrupt the id ------
+# The staging path used to be interpolated into a trap string, so a directory whose name
+# closes the quote and appends commands ran arbitrary shell AND pushed text into the id
+# this function returns. Built via a variable so the test's own quoting cannot drift.
+hostile="x"; hostile="${hostile}'; touch PWNED; echo '"
+t="$(newdir)/$hostile"; mkdir -p "$t"
+here="$PWD"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+pid="$(printf '%s' "$out" | grep -o 'project_id [0-9A-Z]*' | head -1 | awk '{print $2}')"
+if [ "$rc" = 0 ] && [ ! -e "$t/PWNED" ] && [ ! -e "$here/PWNED" ] && [ "${#pid}" = 26 ]; then
+  ok "a hostile project path executes nothing and yields a clean 26-char id"
+else
+  bad "path injection (rc=$rc pwned=$([ -e "$t/PWNED" ] && echo yes || echo no) id='$pid' len=${#pid})"
+fi
+rm -f "$here/PWNED" 2>/dev/null || true
+
+# --- 31. the manifest is validated as a WHOLE file, not key by key ---------
+# Each of these keeps a valid-looking object somewhere in the file; a per-key search
+# accepted them all and rewrote the damage away.
+mfbad() { # <label> <content>
+  local d; d="$(newdir)"
+  (cd "$d" && bash "$BOOT" codex >/dev/null 2>&1)
+  local pid; pid="$(sed -n 's/.*"project_id"[^"]*"\([^"]*\)".*/\1/p' "$d/collab/bus.json")"
+  printf '%s\n' "${2//@PID@/$pid}" > "$d/collab/bus.json"
+  local before; before="$(cksum < "$d/collab/bus.json")"
+  local o; o="$(cd "$d" && bash "$BOOT" codex 2>&1)"; local r=$?
+  local after; after="$(cksum < "$d/collab/bus.json")"
+  if [ "$r" != 0 ] && [ "$before" = "$after" ]; then return 0; fi
+  echo "        accepted/rewrote: $1 (rc=$r)" >&2; return 1
+}
+r31=0
+mfbad "root array" '[ { "manifest_schema": 1, "project_id": "@PID@", "project_alias": "x", "schemas": { "read": [1, 2], "write": 1, "min_reader": 1 }, "publisher_version": "0.7.0" } ]' || r31=1
+mfbad "schema as string" '{
+  "manifest_schema": "1",
+  "project_id": "@PID@",
+  "project_alias": "x",
+  "schemas": { "read": [1, 2], "write": 1, "min_reader": 1 },
+  "publisher_version": "0.7.0"
+}' || r31=1
+mfbad "unknown key with a digit" '{
+  "manifest_schema": 1,
+  "project_id": "@PID@",
+  "project_alias": "x",
+  "future2": true,
+  "schemas": { "read": [1, 2], "write": 1, "min_reader": 1 },
+  "publisher_version": "0.7.0"
+}' || r31=1
+mfbad "unsupported discriminator" '{
+  "manifest_schema": 0,
+  "project_id": "@PID@",
+  "project_alias": "x",
+  "schemas": { "read": [1, 2], "write": 1, "min_reader": 1 },
+  "publisher_version": "0.7.0"
+}' || r31=1
+mfbad "version with trailing junk" '{
+  "manifest_schema": 1,
+  "project_id": "@PID@",
+  "project_alias": "x",
+  "schemas": { "read": [1, 2], "write": 1, "min_reader": 1 },
+  "publisher_version": "0.7.0junk"
+}' || r31=1
+mfbad "alias escape we do not emit" '{
+  "manifest_schema": 1,
+  "project_id": "@PID@",
+  "project_alias": "\u0061",
+  "schemas": { "read": [1, 2], "write": 1, "min_reader": 1 },
+  "publisher_version": "0.7.0"
+}' || r31=1
+[ "$r31" = 0 ] && ok "root array / typed / unknown-key / discriminator / version / alias-escape damage all refused" \
+               || bad "whole-file grammar incomplete"
+
+# --- 32. and still refused with no JSON parser on PATH ---------------------
+# The optional parser only proves "this is some JSON"; the dependency-free grammar is the
+# actual guarantee, so it has to reject prose wrapped around a canonical object alone.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+pid="$(sed -n 's/.*"project_id"[^"]*"\([^"]*\)".*/\1/p' "$t/collab/bus.json")"
+nostub="$ROOT/nojson.$$"; mkdir -p "$nostub"
+for prog in ruby python3 python; do printf '#!/bin/sh\nexit 127\n' > "$nostub/$prog"; chmod +x "$nostub/$prog"; done
+{ printf 'NOT JSON\n'; cat "$t/collab/bus.json"; printf 'TRAILING\n'; } > "$t/collab/bus.json.new"
+mv "$t/collab/bus.json.new" "$t/collab/bus.json"
+before="$(cksum < "$t/collab/bus.json")"
+out="$(cd "$t" && PATH="$nostub:$PATH" bash "$BOOT" codex 2>&1)"; rc=$?
+after="$(cksum < "$t/collab/bus.json")"
+{ [ "$rc" != 0 ] && [ "$before" = "$after" ]; } \
+  && ok "prose around a canonical object is refused even with no JSON parser available" \
+  || bad "no-parser grammar accepted wrapped prose (rc=$rc)"
+
+# --- 33. downgrade gate covers write and SemVer build metadata -------------
+r33=0
+mfbad "write beyond this tooling" '{
+  "manifest_schema": 1,
+  "project_id": "@PID@",
+  "project_alias": "x",
+  "schemas": { "read": [1, 2], "write": 3, "min_reader": 1 },
+  "publisher_version": "0.7.0"
+}' || r33=1
+mfbad "newer version with build metadata" '{
+  "manifest_schema": 1,
+  "project_id": "@PID@",
+  "project_alias": "x",
+  "schemas": { "read": [1, 2], "write": 1, "min_reader": 1 },
+  "publisher_version": "0.7.1+meta"
+}' || r33=1
+[ "$r33" = 0 ] && ok "a newer schemas.write or a +build version is refused, not reset" \
+               || bad "downgrade gate still has holes"
+
+# --- 34. the no-parser grammar rejects three more non-JSON shapes ----------
+# All three keep a canonical-looking object; only a whole-file grammar catches them, and
+# the NUL one is invisible to every string-level check because bash cannot hold the byte.
+nostub2="$ROOT/nojson2.$$"; mkdir -p "$nostub2"
+for prog in ruby python3 python; do printf '#!/bin/sh\nexit 127\n' > "$nostub2/$prog"; chmod +x "$nostub2/$prog"; done
+r34=0
+mfraw() { # <label> <sed-or-perl mutation applied to a fresh manifest>
+  local d; d="$(newdir)"; (cd "$d" && bash "$BOOT" codex >/dev/null 2>&1)
+  eval "$2"                      # operates on $d/collab/bus.json
+  local before; before="$(cksum < "$d/collab/bus.json")"
+  local o r; o="$(cd "$d" && PATH="$nostub2:$PATH" bash "$BOOT" codex 2>&1)"; r=$?
+  local after; after="$(cksum < "$d/collab/bus.json")"
+  { [ "$r" != 0 ] && [ "$before" = "$after" ]; } && return 0
+  echo "        accepted/rewrote: $1 (rc=$r)" >&2; return 1
+}
+mfraw "NUL after the opening brace" \
+  'printf "{\000\n" > "$d/collab/tmp.h"; tail -n +2 "$d/collab/bus.json" >> "$d/collab/tmp.h"; mv "$d/collab/tmp.h" "$d/collab/bus.json"' || r34=1
+mfraw "alias with a bare quote" \
+  'sed -i.bak "s/\"project_alias\": \"/\"project_alias\": \"a\"b/" "$d/collab/bus.json"; rm -f "$d/collab/bus.json.bak"' || r34=1
+mfraw "read list with a trailing comma" \
+  'sed -i.bak "s/\"read\": \[1, 2\]/\"read\": [1, 2,]/" "$d/collab/bus.json"; rm -f "$d/collab/bus.json.bak"' || r34=1
+[ "$r34" = 0 ] && ok "NUL / bare quote / trailing comma are all refused with no JSON parser" \
+               || bad "no-parser grammar still launders corruption"
+
+# --- 35. tooling capability comes from the binary, not the environment -----
+# A fail-closed policy an inherited env var can switch off is not a policy.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+sed -i.bak -e 's/"read": \[1, 2\]/"read": [1, 2, 3]/' -e 's/"write": 1/"write": 3/' "$t/collab/bus.json"
+rm -f "$t/collab/bus.json.bak"
+before="$(cksum < "$t/collab/bus.json")"
+out="$(cd "$t" && MF_TOOLING_READ=1,2,3 MF_TOOLING_WRITE=1,3 bash "$BOOT" codex 2>&1)"; rc=$?
+after="$(cksum < "$t/collab/bus.json")"
+{ [ "$rc" != 0 ] && [ "$before" = "$after" ]; } \
+  && ok "MF_TOOLING_* in the environment cannot unlock a downgrade" \
+  || bad "env-supplied capability downgraded the manifest (rc=$rc)"
+
+# --- 36. SemVer precedence: stable outranks its own prerelease -------------
+# Dropping the prerelease made 0.7.0 and 0.7.0-alpha compare EQUAL, so prerelease tooling
+# would quietly rewrite a stable manifest as prerelease.
+vcmp() { bash -c '. "$1"; rc=0; _mf_version_cmp "$2" "$3" || rc=$?; echo $rc' _ "$DIR/scripts/lib/manifest.sh" "$2" "$3"; }
+r36=0
+[ "$(vcmp x 0.7.0 0.7.0-alpha)" = 1 ] || { echo "        stable !> prerelease" >&2; r36=1; }
+[ "$(vcmp x 0.7.0-alpha 0.7.0)" = 2 ] || { echo "        prerelease !< stable" >&2; r36=1; }
+[ "$(vcmp x 0.7.0-rc.10 0.7.0-rc.2)" = 1 ] || { echo "        rc.10 !> rc.2" >&2; r36=1; }
+[ "$(vcmp x 0.7.1+meta 0.7.0)" = 1 ] || { echo "        build metadata broke the core compare" >&2; r36=1; }
+[ "$(vcmp x 0.10.0 0.9.0)" = 1 ] || { echo "        0.10.0 !> 0.9.0" >&2; r36=1; }
+[ "$(vcmp x 1.2.3 1.2.3+build)" = 0 ] || { echo "        build metadata affected precedence" >&2; r36=1; }
+[ "$r36" = 0 ] && ok "SemVer precedence: stable > prerelease, rc.10 > rc.2, build ignored" \
+               || bad "version precedence wrong"
+
+# --- 37. SemVer numeric components must not go through shell arithmetic ----
+# `[ "$x" -gt "$y" ]` past the 64-bit range prints "integer expression expected" and
+# returns false, which fell through to "equal" — so a hugely newer version compared as
+# not-newer and the downgrade gate opened.
+huge=999999999999999999999999999999
+r37=0
+out="$(bash -c '. "$1"; rc=0; _mf_version_cmp "$2" "$3" || rc=$?; echo "rc=$rc"' \
+       _ "$DIR/scripts/lib/manifest.sh" "1.0.0-$huge" "1.0.0-2" 2>&1)"
+{ printf '%s' "$out" | grep -q "^rc=1$" && ! printf '%s' "$out" | grep -q "integer expression"; } \
+  || { echo "        huge prerelease: $out" >&2; r37=1; }
+out="$(bash -c '. "$1"; rc=0; _mf_version_cmp "$2" "$3" || rc=$?; echo "rc=$rc"' \
+       _ "$DIR/scripts/lib/manifest.sh" "$huge.0.0" "0.7.0" 2>&1)"
+{ printf '%s' "$out" | grep -q "^rc=1$" && ! printf '%s' "$out" | grep -q "integer expression"; } \
+  || { echo "        huge major: $out" >&2; r37=1; }
+# leading zeros must normalise, not change the ordering
+out="$(bash -c '. "$1"; rc=0; _mf_version_cmp "$2" "$3" || rc=$?; echo "rc=$rc"' \
+       _ "$DIR/scripts/lib/manifest.sh" "1.0.0-007" "1.0.0-7" 2>&1)"
+printf '%s' "$out" | grep -q "^rc=0$" || { echo "        leading zeros: $out" >&2; r37=1; }
+[ "$r37" = 0 ] && ok "SemVer numeric compare is exact past the 64-bit range" \
+               || bad "numeric overflow in version comparison"
+
+# --- 38. a hugely newer publisher_version is refused, not downgraded -------
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+sed -i.bak "s/\"publisher_version\": \"[^\"]*\"/\"publisher_version\": \"$huge.0.0\"/" "$t/collab/bus.json"
+rm -f "$t/collab/bus.json.bak"
+before="$(cksum < "$t/collab/bus.json")"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+after="$(cksum < "$t/collab/bus.json")"
+{ [ "$rc" != 0 ] && [ "$before" = "$after" ] && ! printf '%s' "$out" | grep -q "integer expression"; } \
+  && ok "a huge major version is refused with no arithmetic diagnostic" \
+  || bad "huge version downgraded (rc=$rc)"
+
 [ "$fails" -eq 0 ] && { echo "bootstrap: all passed"; exit 0; }
 echo "bootstrap: $fails failed" >&2; exit 1
