@@ -8,7 +8,7 @@
     {
       "name": "collab-bus",
       "source": "./plugins/collab-bus",
-      "description": "Peer collaboration between Claude Code and a second AI CLI (Codex, etc.) over herdr + a filesystem message bus — submit-and-wait on agent state, iterate to sign-off. Requires herdr.",
+      "description": "Peer collaboration between Claude Code and a second AI CLI (Codex, etc.) over herdr + a filesystem message bus — symmetric roles (either side can initiate), submit-and-wait on agent state, iterate to sign-off. Requires herdr.",
       "version": "0.6.1",
       "author": {
         "name": "airplane98"

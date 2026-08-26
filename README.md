@@ -1,13 +1,25 @@
 # collab-bus
 
-A Claude Code plugin for **peer collaboration between two AI CLIs** — Claude Code
-(orchestrator) and a second CLI like **Codex** (reviewer / second opinion) — sharing
-one repo. Message *content* + audit trail live in a filesystem bus (`collab/inbox/`);
-*transport and turn-completion* run over **[herdr](https://herdr.dev)**, an
-agent-aware terminal workspace manager.
+**Peer collaboration between two AI coding CLIs** sharing one repo — Claude Code and a
+second CLI like **Codex**. Message *content* + audit trail live in a filesystem bus
+(`collab/inbox/`); *transport and turn-completion* run over **[herdr](https://herdr.dev)**,
+an agent-aware terminal workspace manager.
 
 Use it when you want a genuinely independent agent to **review, debate, and sign off**
 on your work in a multi-round loop, with a durable audit trail — not a one-shot verdict.
+
+**Roles are symmetric — either side can be the one asking.** Claude Code can send Codex a
+diff to review, and Codex can just as well file a review request back to Claude Code and
+wait for *its* sign-off. Nothing privileges one side: `from`/`to` are message fields, the
+knock works in both directions, and both agents call the same vendored scripts. The docs
+use "one proposes, the other reviews" as the common case, not as a constraint.
+
+**It ships as a Claude Code plugin, but the peer installs nothing.** `/collab-bus:init`
+scaffolds the bus, *vendors* the scripts into the project itself (`collab/bin/`), and
+writes the shared contract (`collab/PROTOCOL.md`). Those files are what the peer CLI reads
+and runs — so Codex (or any CLI that can read a file and run a shell script) participates
+fully with nothing installed. Only the bootstrap and the `/collab-bus:*` slash commands
+need Claude Code today.
 
 ## Why herdr
 
@@ -45,7 +57,9 @@ Requires **[herdr](https://herdr.dev)** (`curl`/Homebrew/Nix) and a second AI CL
 ```
 
 Or just ask Claude in plain language ("get Codex's second opinion on this diff") — the
-bundled `collab` skill drives the write → knock → read → archive loop.
+bundled `collab` skill drives the write → publish → knock → read → archive loop. In the
+other direction you tell the peer instead ("file a review request to Claude"); it follows
+the same `collab/PROTOCOL.md` and runs the same vendored scripts.
 
 ### Wiring the peer
 
@@ -92,7 +106,7 @@ bundled `collab` skill drives the write → knock → read → archive loop.
 .claude-plugin/marketplace.json     # marketplace listing (this repo is its own marketplace)
 plugins/collab-bus/
 ├── .claude-plugin/plugin.json
-├── skills/collab/SKILL.md          # the orchestration workflow
+├── skills/collab/SKILL.md          # the collaboration workflow (either side may lead)
 ├── commands/{init,send,status}.md  # /collab-bus:* commands
 ├── scripts/next-id.sh              # allocate a message: mint a ULID, create a .md.part draft
 ├── scripts/publish.sh              # atomic publish: rename the draft to the final .md
