@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Atomically publish a collab-bus draft into the inbox (v0.6).
+# Atomically publish a collab-bus draft into the inbox (v0.6; envelope gate v0.8).
 #
 # next-id.sh allocates a DRAFT — `.<ULID>-<tab>-<slug>.md.part` — instead of the
 # final message. The sender writes content into that draft, then calls this to
@@ -18,13 +18,17 @@
 #   - exactly one argument, and a canonical draft basename (real ULID/tab/slug);
 #   - the draft is not a symlink and is a regular file (never publish a symlink
 #     or a dir/FIFO as if it were a self-contained message);
-#   - the draft is non-empty (the last guard against shipping a 0-byte message).
+#   - the draft is non-empty (the last guard against shipping a 0-byte message);
+#   - a valid envelope (v0.8): the frontmatter must parse and match its schema, and the
+#     `id` field must equal the filename's ULID. The envelope library is REQUIRED — if
+#     it is missing the publish FAILS rather than skipping the check.
 # On any failure the draft is left in place for inspection.
 #
 # Usage:  publish.sh <draft-path from next-id.sh>
 # Prints: the final message path on success.
-# Exit:   0 published; 2 bad usage / not a canonical draft / symlink; 1 missing,
-#         non-regular, empty, or final already exists.
+#
+# Exit:   0 published; 2 bad usage / not a canonical draft / symlink / bad envelope;
+#         1 missing, non-regular, empty, missing gate library, or final already exists.
 set -euo pipefail
 
 [ "$#" -eq 1 ] || { echo "usage: publish.sh <draft-path>" >&2; exit 2; }
@@ -58,6 +62,60 @@ ULID='[0-7][0-9A-HJKMNP-TV-Z]{25}'
 if ! [[ "$final" =~ ^${ULID}-w[0-9]+t[0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*\.md$ ]]; then
   echo "error: '$base' is not a canonical collab draft name (bad ULID/tab/slug)" >&2; exit 2
 fi
+
+# Envelope gate (v0.8): frontmatter is validated HERE, at the boundary, so a message a
+# reader cannot parse never enters the bus. Discovering it later — which is how 13
+# messages with an unquoted ": " got published — leaves the damage permanent, because a
+# published message is immutable by design. Version-aware: legacy (schema 1) drafts keep
+# passing, schema 2 is held to the strict field set and quoting rules.
+# The library is REQUIRED. Skipping the gate when it is missing would turn a deployment
+# mistake into silent acceptance of anything — which is exactly what happened when
+# bootstrap vendored publish.sh without lib/: unvalidated drafts published cleanly.
+_pub_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/envelope.sh"
+if [ ! -r "$_pub_lib" ]; then
+  echo "error: cannot read $_pub_lib — the envelope gate is missing, refusing to publish" >&2
+  echo "       re-run bootstrap.sh to re-vendor collab/bin/ (draft kept: $DRAFT)" >&2
+  exit 1
+fi
+. "$_pub_lib"
+if ! envelope_check "$DRAFT"; then
+  echo "error: draft frontmatter is not valid — refusing to publish (draft kept: $DRAFT)" >&2
+  echo "       quote agent-authored values with fm-quote.sh; see PROTOCOL." >&2
+  exit 2
+fi
+envelope_yaml_check "$DRAFT" || {
+  echo "error: a YAML parser rejected the frontmatter — refusing to publish (draft kept)" >&2
+  exit 2
+}
+# The filename ULID and the `id` field must agree. They are two records of the same fact,
+# and a message whose id disagrees with its own name breaks every reply_to lookup.
+_pub_fid="$(fm_get "$DRAFT" id 2>/dev/null || true)"
+if [ "$_pub_fid" != "${final%%-*}" ]; then
+  echo "error: frontmatter id '$_pub_fid' does not match the filename ULID '${final%%-*}' (draft kept)" >&2
+  exit 2
+fi
+
+# Redundant transport facts must agree, the same way id and filename must. A draft sitting
+# in inbox/to/codex/ whose frontmatter says `to: claude`, or whose `pair` disagrees with
+# the tab encoded in its own name, would route one way and read another.
+_pub_box="$(basename "$dir")"
+case "$dir" in
+  */inbox/to/"$_pub_box")
+    _pub_to="$(fm_get "$DRAFT" to 2>/dev/null || true)"
+    if [ -n "$_pub_to" ] && [ "$_pub_to" != "$_pub_box" ]; then
+      echo "error: frontmatter 'to: $_pub_to' disagrees with the inbox it is being published into ($_pub_box) (draft kept)" >&2
+      exit 2
+    fi ;;
+esac
+_pub_pair="$(fm_get "$DRAFT" pair 2>/dev/null || true)"
+if [ -n "$_pub_pair" ]; then
+  _pub_ftab="${final#*-}"; _pub_ftab="${_pub_ftab%%-*}"      # <ULID>-w1t1-slug.md -> w1t1
+  if [ "${_pub_pair/:/}" != "$_pub_ftab" ]; then
+    echo "error: frontmatter 'pair: $_pub_pair' disagrees with the filename tab '$_pub_ftab' (draft kept)" >&2
+    exit 2
+  fi
+fi
+
 FINAL="$dir/$final"
 
 # Exact two-path link (see header): the utility if present, else perl's link().

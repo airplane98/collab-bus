@@ -70,6 +70,17 @@ fresh template would silently discard.
    message into `$DRAFT` first (PROTOCOL frontmatter: `pair: <my tab_id>`,
    `from: claude`, `to: <peer>`, precise `type`, `status: open`), **then publish** —
    `publish.sh` refuses an empty draft, so never publish before writing the body.
+
+   **Quote the human fields; leave the machine fields bare.** `subject` and `refs` (and
+   later `note`/`alias`) are text you compose — single-quote them. `id`, `from`, `to`,
+   `type`, `status`, `pair`, `reply_to` are machine tokens — quoting those is itself a
+   validation error. `publish.sh` checks the frontmatter and rejects a draft a YAML parser
+   could not read. The trap is `": "` inside a plain
+   value — `refs: branch x; reply_to: 01M0…` is *not* valid YAML, and 13 messages in
+   this repo's own bus were published before the gate existed. So write
+   `subject: 'anything: at all'` and `refs: 'it''s fine'` — single quotes, an interior
+   apostrophe doubled, never a newline. `scripts/fm-quote.sh <text>` emits exactly that;
+   `scripts/check-envelope.sh <file>` reports what is wrong before you publish.
    One concern per message. For a review, point at the diff (`git diff`, branch,
    files) and give your framing / design intent — a cold diff yields a shallow review.
 

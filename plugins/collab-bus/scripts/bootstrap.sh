@@ -18,7 +18,8 @@
 # writing the onboarding message, and running the handshake.
 #
 # What it does:
-#   fresh project  — scaffold collab/, vendor collab/bin/{next-id,publish,knock}.sh,
+#   fresh project  — scaffold collab/, vendor collab/bin/{next-id,publish,knock,
+#                    check-envelope,fm-quote}.sh plus collab/bin/lib/envelope.sh,
 #                    render collab/PROTOCOL.md from the template (stamped with the
 #                    plugin version).
 #   existing bus   — MIGRATE: re-vendor collab/bin/ only. It never overwrites
@@ -40,7 +41,10 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SELF/.." && pwd -P)"
 TEMPLATE="$PLUGIN_ROOT/templates/PROTOCOL.template.md"
 MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
-VENDOR=(next-id.sh publish.sh knock.sh)
+# publish.sh REQUIRES lib/envelope.sh — vendoring the script without its gate would
+# leave a bus that silently accepts unvalidated messages, so the library and the two
+# envelope CLIs ship together with the rest. Entries may contain a directory component.
+VENDOR=(next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh lib/envelope.sh)
 
 usage() { echo "usage: bootstrap.sh [peer] [--dir <project>]   (peer defaults to codex)" >&2; }
 
@@ -135,6 +139,7 @@ vendor_scripts() {
 
   # 1. stage all
   for f in "${VENDOR[@]}"; do
+    mkdir -p "$STAGE/$(dirname "$f")"
     cp "$SELF/$f" "$STAGE/$f"
     chmod +x "$STAGE/$f"
     if [ -L "$STAGE/$f" ] || [ ! -f "$STAGE/$f" ]; then
@@ -145,9 +150,31 @@ vendor_scripts() {
   # 2. preflight all destinations
   for f in "${VENDOR[@]}"; do
     dest="$COLLAB/bin/$f"
+    # A vendored path may sit in a subdirectory (lib/); that directory must be a real
+    # directory we own, not a symlink pointing out of the project.
+    if [ "$f" != "$(basename "$f")" ]; then
+      local pdir="$(dirname "$dest")"
+      reject_symlink "$pdir" "collab/bin/$(dirname "$f")"
+      # It must also not be an existing REGULAR FILE. Checking only for a symlink let
+      # such a parent pass preflight, and `mkdir -p` then failed in phase 3 — after the
+      # top-level scripts had already been replaced, leaving exactly the half-migrated
+      # bin the three-phase split exists to prevent.
+      if [ -e "$pdir" ] && [ ! -d "$pdir" ]; then
+        echo "error: $pdir exists and is not a directory — refusing to install $f" >&2; exit 1
+      fi
+    fi
     reject_symlink "$dest" "collab/bin/$f"
     if [ -e "$dest" ] && [ ! -f "$dest" ]; then
       echo "error: $dest exists and is not a regular file — refusing to replace it" >&2; exit 1
+    fi
+  done
+
+  # 2.5 create every missing parent directory now, while nothing has been replaced yet.
+  # Doing it inside the replace loop means a mkdir failure lands mid-way through.
+  for f in "${VENDOR[@]}"; do
+    if [ "$f" != "$(basename "$f")" ]; then
+      mkdir -p "$COLLAB/bin/$(dirname "$f")" || {
+        echo "error: could not create collab/bin/$(dirname "$f")" >&2; exit 1; }
     fi
   done
 

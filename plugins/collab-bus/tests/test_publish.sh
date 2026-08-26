@@ -14,6 +14,15 @@ fails=0
 ok()  { echo "  ok   - $1"; }
 bad() { echo "  FAIL - $1" >&2; fails=$((fails+1)); }
 newroot() { local t; t="$(mktemp -d)"; mkdir -p "$t/collab/inbox"; printf '%s' "$t"; }
+
+# The publish gate validates frontmatter (v0.8), so a fixture draft must be a real
+# message, not an arbitrary blob. Body text is passed through so assertions can still
+# check that content survived the publish.
+write_msg() { # <draft-path> [body]
+  local id; id="$(basename "$1")"; id="${id#.}"; id="${id%%-*}"
+  printf -- '---\nid: %s\nfrom: claude\nto: codex\ntype: task\nsubject: %s\nstatus: open\n---\n\n%s\n' \
+    "$id" "'fixture message'" "${2:-body}" > "$1"
+}
 # messages visible to a receiver = final .md files only (ls hides dot drafts).
 mds() { ls "$1"/*.md 2>/dev/null | wc -l | tr -d ' '; }
 
@@ -21,10 +30,10 @@ mds() { ls "$1"/*.md 2>/dev/null | wc -l | tr -d ' '; }
 t="$(newroot)"; box="$t/collab/inbox/to/codex"
 draft="$(cd "$t" && bash "$NEXTID" codex happy w1:t1)"
 before="$(mds "$box")"                 # while only the draft exists
-printf 'hello body\n' > "$draft"
+write_msg "$draft" "hello body"
 final="$(cd "$t" && bash "$PUBLISH" "$draft")"; rc=$?
 if [ "$rc" = 0 ] && [ "$before" = 0 ] && [ -f "$final" ] && [ ! -e "$draft" ] \
-   && [ "$(cat "$final")" = "hello body" ] && [[ "$(basename "$final")" == *.md ]]; then
+   && grep -q "^hello body$" "$final" && [[ "$(basename "$final")" == *.md ]]; then
   ok "draft publishes to a final .md (invisible as a message until published)"
 else
   bad "happy-path publish wrong (rc=$rc before=$before final=$final)"
@@ -47,7 +56,7 @@ rm -rf "$t"
 # --- 3. an existing final is never clobbered ---------------------------------
 t="$(newroot)"; box="$t/collab/inbox/to/codex"
 draft="$(cd "$t" && bash "$NEXTID" codex clob w1:t1)"
-printf 'body\n' > "$draft"
+write_msg "$draft"
 final_name="$(basename "$draft")"; final_name="${final_name#.}"; final_name="${final_name%.part}"
 : > "$box/$final_name"                                    # a final already sits there
 printf 'IMPORTANT\n' > "$box/$final_name"
@@ -98,7 +107,7 @@ rm -rf "$t"
 # (26-char ULID, w<n>t<n> tab, allowlisted slug), else any file could be renamed.
 t="$(newroot)"; box="$t/collab/inbox/to/codex"; mkdir -p "$box"
 draft="$box/.badulid-w1t1-x.md.part"     # not a 26-char Crockford ULID
-printf 'body\n' > "$draft"
+write_msg "$draft"
 out="$(bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
 if [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "canonical" && [ -e "$draft" ] && [ ! -e "$box/badulid-w1t1-x.md" ]; then
   ok "a non-canonical draft name is refused (real ULID/tab/slug required)"
@@ -110,7 +119,7 @@ rm -rf "$t"
 # --- 8. a slug containing a dot still publishes (canonical regex allows it) ---
 t="$(newroot)"; box="$t/collab/inbox/to/codex"
 draft="$(cd "$t" && bash "$NEXTID" codex foo.bar w1:t1)"
-printf 'dotted\n' > "$draft"
+write_msg "$draft" dotted
 final="$(cd "$t" && bash "$PUBLISH" "$draft")"; rc=$?
 if [ "$rc" = 0 ] && [ -f "$final" ] && [[ "$(basename "$final")" == *-foo.bar.md ]]; then
   ok "a dotted slug publishes correctly ($(basename "$final"))"
@@ -133,7 +142,7 @@ rm -rf "$t"
 
 # --- 10. exactly one argument is required ------------------------------------
 t="$(newroot)"
-draft="$(cd "$t" && bash "$NEXTID" codex args w1:t1)"; printf 'x\n' > "$draft"
+draft="$(cd "$t" && bash "$NEXTID" codex args w1:t1)"; write_msg "$draft"
 out="$(bash "$PUBLISH" "$draft" extra 2>&1)"; rc=$?
 [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "usage" && [ -e "$draft" ] \
   && ok "extra arguments are rejected (draft untouched)" \
@@ -145,7 +154,7 @@ rm -rf "$t"
 # dangling symlink) but the atomic `link` does not: link() sees the name exists
 # and fails with EEXIST. Proof the publish is no-replace, not check-then-move.
 t="$(newroot)"; box="$t/collab/inbox/to/codex"
-draft="$(cd "$t" && bash "$NEXTID" codex dang w1:t1)"; printf 'body\n' > "$draft"
+draft="$(cd "$t" && bash "$NEXTID" codex dang w1:t1)"; write_msg "$draft"
 fn="$(basename "$draft")"; fn="${fn#.}"; fn="${fn%.part}"
 ln -s "$t/nonexistent-target" "$box/$fn"     # dangling symlink where the final would land
 out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
@@ -160,7 +169,7 @@ rm -rf "$t"
 # `ln SOURCE DIR` would create a link INSIDE the directory and report success,
 # swallowing the message and losing the draft. The `link` utility fails instead.
 t="$(newroot)"; box="$t/collab/inbox/to/codex"
-draft="$(cd "$t" && bash "$NEXTID" codex intodir w1:t1)"; printf 'body\n' > "$draft"
+draft="$(cd "$t" && bash "$NEXTID" codex intodir w1:t1)"; write_msg "$draft"
 fn="$(basename "$draft")"; fn="${fn#.}"; fn="${fn%.part}"
 mkdir "$box/$fn"                              # a directory sits where the final would go
 out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
@@ -174,7 +183,7 @@ rm -rf "$t"
 
 # --- 13. a symlink-to-directory at the final path is not followed ------------
 t="$(newroot)"; box="$t/collab/inbox/to/codex"
-draft="$(cd "$t" && bash "$NEXTID" codex symdir w1:t1)"; printf 'body\n' > "$draft"
+draft="$(cd "$t" && bash "$NEXTID" codex symdir w1:t1)"; write_msg "$draft"
 fn="$(basename "$draft")"; fn="${fn#.}"; fn="${fn%.part}"
 mkdir "$t/realdir"; ln -s "$t/realdir" "$box/$fn"
 out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
@@ -192,7 +201,7 @@ rm -rf "$t"
 # must not be silent either. Stub rm to fail; expect rc=0, a stderr warning, and
 # both names present (same inode).
 t="$(newroot)"; box="$t/collab/inbox/to/codex"; stub="$(mktemp -d)"
-draft="$(cd "$t" && bash "$NEXTID" codex cleanup w1:t1)"; printf 'body\n' > "$draft"
+draft="$(cd "$t" && bash "$NEXTID" codex cleanup w1:t1)"; write_msg "$draft"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$stub/rm"; chmod +x "$stub/rm"
 out="$(cd "$t" && PATH="$stub:$PATH" bash "$PUBLISH" "$draft" 2>&1 >/dev/null)"; rc=$?
 final="$(cd "$t" && PATH="$PATH" ls "$box"/*.md 2>/dev/null | head -1)"
@@ -202,6 +211,75 @@ else
   bad "cleanup-failure path wrong (rc=$rc final=$final)"
 fi
 rm -rf "$t" "$stub"
+
+# --- 18. the frontmatter id must match the filename ULID --------------------
+# Two records of one fact. A message whose id disagrees with its own name breaks every
+# reply_to lookup that follows it.
+t="$(newroot)"
+draft="$(cd "$t" && bash "$NEXTID" codex idmatch w1:t1)"
+printf -- '---\nid: %s\nfrom: claude\nto: codex\ntype: task\nsubject: %s\nstatus: open\n---\n\nbody\n' \
+  "01M0WG3WJF6AX39B2RGCPVN2CM" "'mismatched'" > "$draft"
+out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "does not match the filename" && [ -e "$draft" ]; } \
+  && ok "a frontmatter id that disagrees with the filename is refused" \
+  || bad "id/filename mismatch accepted (rc=$rc)"
+rm -rf "$t"
+
+# --- 19. a bad envelope is refused; the draft survives for repair -----------
+t="$(newroot)"
+draft="$(cd "$t" && bash "$NEXTID" codex badenv w1:t1)"
+id="$(basename "$draft")"; id="${id#.}"; id="${id%%-*}"
+printf -- '---\nid: %s\nfrom: claude\nto: codex\ntype: task\nsubject: broken: here\nstatus: open\n---\n\nbody\n' "$id" > "$draft"
+out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
+{ [ "$rc" = 2 ] && [ -e "$draft" ] && [ -z "$(ls "$t/collab/inbox/to/codex"/*.md 2>/dev/null)" ]; } \
+  && ok "an unparseable envelope is refused and the draft is kept" \
+  || bad "bad envelope published (rc=$rc)"
+rm -rf "$t"
+
+# --- 20. publish FAILS LOUD when the envelope library is missing ------------
+# Vendoring publish.sh without lib/ used to disable the gate silently — every draft,
+# including ones with no frontmatter at all, published cleanly.
+t="$(newroot)"
+nolib="$(mktemp -d)"; cp "$NEXTID" "$PUBLISH" "$nolib/"
+draft="$(cd "$t" && bash "$nolib/next-id.sh" codex nolib w1:t1)"
+printf 'no frontmatter at all\n' > "$draft"
+out="$(cd "$t" && bash "$nolib/publish.sh" "$draft" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "envelope gate is missing" && [ -e "$draft" ]; } \
+  && ok "publish refuses to run without its envelope library (no silent skip)" \
+  || bad "publish ran without the gate (rc=$rc)"
+rm -rf "$t" "$nolib"
+
+# --- 21. transport facts in the frontmatter must match the path ------------
+t="$(newroot)"
+draft="$(cd "$t" && bash "$NEXTID" codex xbind w1:t1)"
+id="$(basename "$draft")"; id="${id#.}"; id="${id%%-*}"
+# published into inbox/to/codex/ but addressed to claude
+printf -- '---\nid: %s\nfrom: claude\nto: claude\ntype: task\nsubject: %s\nstatus: open\n---\n\nbody\n' "$id" "'x'" > "$draft"
+out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc1=$?
+# pair disagreeing with the tab encoded in the filename
+printf -- '---\nid: %s\nfrom: claude\nto: codex\npair: w9:t9\ntype: task\nsubject: %s\nstatus: open\n---\n\nbody\n' "$id" "'x'" > "$draft"
+out2="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc2=$?
+{ [ "$rc1" != 0 ] && printf '%s' "$out" | grep -q "disagrees with the inbox" \
+  && [ "$rc2" != 0 ] && printf '%s' "$out2" | grep -q "disagrees with the filename tab"; } \
+  && ok "a 'to' or 'pair' that contradicts the path is refused" \
+  || bad "cross-field binding not enforced (rc1=$rc1 rc2=$rc2)"
+rm -rf "$t"
+
+# --- 22. a draft carrying a NUL is refused at the boundary -----------------
+# The full oracle: matching filename/id, correct to/pair — only the NUL is wrong, and it
+# used to publish cleanly because bash dropped the byte before any check saw it.
+t="$(newroot)"
+draft="$(cd "$t" && bash "$NEXTID" codex nulmsg w1:t1)"
+id="$(basename "$draft")"; id="${id#.}"; id="${id%%-*}"
+{ printf -- '---\nid: %s\nfrom: claude\nto: codex\npair: w1:t1\ntype: task\n' "$id"
+  printf "subject: 'valid'\000\n"
+  printf -- 'status: open\n---\n\nbody\n'; } > "$draft"
+out="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "NUL" \
+  && [ -e "$draft" ] && [ -z "$(ls "$t/collab/inbox/to/codex"/*.md 2>/dev/null)" ]; } \
+  && ok "a draft containing a NUL byte is refused and never published" \
+  || bad "NUL draft published (rc=$rc)"
+rm -rf "$t"
 
 [ "$fails" -eq 0 ] && { echo "publish: all passed"; exit 0; }
 echo "publish: $fails failed" >&2; exit 1

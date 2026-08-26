@@ -19,6 +19,13 @@ trap 'rm -rf "$ROOT"' EXIT
 # incremented here would not persist in the caller and every case would share one
 # directory (and silently inherit the previous case's collab/).
 newdir() { mktemp -d "$ROOT/case.XXXXXX"; }
+# A scaffolded bus now validates frontmatter on publish, so a fixture draft has to be a
+# real message rather than an arbitrary blob.
+write_msg() { # <draft-path>
+  local id; id="$(basename "$1")"; id="${id#.}"; id="${id%%-*}"
+  printf -- '---\nid: %s\nfrom: claude\nto: codex\ntype: task\nsubject: %s\nstatus: open\n---\n\nbody\n' \
+    "$id" "'fixture message'" > "$1"
+}
 
 # --- 1. fresh scaffold: tree, executables, fully rendered PROTOCOL -----------
 t="$(newdir)"
@@ -49,7 +56,7 @@ fi
 
 # --- 3. the scaffolded bus actually works end to end -------------------------
 d="$(cd "$t" && collab/bin/next-id.sh codex smoke w1:t1 2>/dev/null)"
-printf 'body\n' > "$d" 2>/dev/null
+write_msg "$d"
 f="$(cd "$t" && collab/bin/publish.sh "$d" 2>/dev/null)"
 if [ -n "$f" ] && [ -f "$f" ] && [[ "$(basename "$f")" == *-w1t1-smoke.md ]]; then
   ok "vendored scripts work in the scaffolded bus (allocate → publish)"
@@ -159,6 +166,7 @@ fi
 fake="$(newdir)"
 mkdir -p "$fake/scripts" "$fake/templates" "$fake/.claude-plugin"
 cp "$DIR"/scripts/*.sh "$fake/scripts/"
+mkdir -p "$fake/scripts/lib"; cp "$DIR"/scripts/lib/*.sh "$fake/scripts/lib/"
 cp "$DIR/templates/PROTOCOL.template.md" "$fake/templates/"
 printf '{ "name": "collab-bus" }\n' > "$fake/.claude-plugin/plugin.json"   # no version
 t="$(newdir)"
@@ -265,6 +273,63 @@ if [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "not a regular file" \
 else
   bad "partial migration left behind (rc=$rc next-id='$(head -1 "$t/collab/bin/next-id.sh")')"
 fi
+
+# --- 18. a scaffolded bus carries the envelope gate AND enforces it ---------
+# publish.sh requires lib/envelope.sh; vendoring one without the other produced a bus
+# that silently accepted anything. Assert the files land, then prove the gate runs.
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+missing=""
+for p in bin/lib/envelope.sh bin/check-envelope.sh bin/fm-quote.sh; do
+  [ -x "$t/collab/$p" ] || missing="$missing $p"
+done
+d="$(cd "$t" && collab/bin/next-id.sh codex gated w1:t1)"
+id="$(basename "$d")"; id="${id#.}"; id="${id%%-*}"
+printf -- '---\nid: %s\nfrom: claude\nto: codex\ntype: task\nsubject: broken: value\nstatus: open\n---\n\nbody\n' "$id" > "$d"
+(cd "$t" && collab/bin/publish.sh "$d" >/dev/null 2>&1); rej=$?
+printf -- '---\nid: %s\nfrom: claude\nto: codex\ntype: task\nsubject: %s\nstatus: open\n---\n\nbody\n' "$id" "'fine now'" > "$d"
+good="$(cd "$t" && collab/bin/publish.sh "$d" 2>/dev/null)"; acc=$?
+if [ -z "$missing" ] && [ "$rej" != 0 ] && [ "$acc" = 0 ] && [ -f "$good" ]; then
+  ok "a scaffolded bus vendors the gate and uses it (bad refused, good published)"
+else
+  bad "vendored gate wrong (missing:$missing reject_rc=$rej accept_rc=$acc)"
+fi
+
+# --- 19. migrate installs the gate into a bus that predates it --------------
+t="$(newdir)"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+rm -rf "$t/collab/bin/lib" "$t/collab/bin/check-envelope.sh" "$t/collab/bin/fm-quote.sh"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && [ -x "$t/collab/bin/lib/envelope.sh" ] && [ -x "$t/collab/bin/check-envelope.sh" ]; then
+  ok "migrate adds the envelope gate to a bus that was vendored without it"
+else
+  bad "migrate did not install the gate (rc=$rc)"
+fi
+
+# --- 20. a nested vendor parent that is not a directory aborts before ANY swap
+# Preflight only rejected a symlinked bin/lib. A regular FILE there passed, and mkdir
+# then failed in the replace phase — after the top-level scripts had been swapped.
+for kind in file symlink; do
+  t="$(newdir)"
+  (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+  marked=""
+  for f in next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh; do
+    printf 'MARKED %s\n' "$f" > "$t/collab/bin/$f"; marked="$marked $f"
+  done
+  rm -rf "$t/collab/bin/lib"
+  if [ "$kind" = file ]; then printf 'not a dir\n' > "$t/collab/bin/lib"
+  else ln -s "$ROOT" "$t/collab/bin/lib"; fi
+  out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+  intact=1
+  for f in $marked; do
+    [ "$(cat "$t/collab/bin/$f")" = "MARKED $f" ] || intact=0
+  done
+  if [ "$rc" != 0 ] && [ "$intact" = 1 ]; then
+    ok "a $kind at collab/bin/lib aborts before any script is replaced"
+  else
+    bad "nested parent ($kind) left a mixed install (rc=$rc intact=$intact)"
+  fi
+done
 
 [ "$fails" -eq 0 ] && { echo "bootstrap: all passed"; exit 0; }
 echo "bootstrap: $fails failed" >&2; exit 1

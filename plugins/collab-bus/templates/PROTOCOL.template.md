@@ -87,18 +87,42 @@ collab/
 
 ```markdown
 ---
-id: 01M0WG3WJF6AX39B2RGCPVN2CM   # next-id.sh 產生的 ULID（就是檔名前綴）
-pair: w3:t3             # 必填：發訊方的 herdr tab_id（多組並存時用來路由，見下）
-from: claude            # claude | {{PEER}}
-to: {{PEER}}            # {{PEER}} | claude
-type: review-request    # review-request | review-result | task | reply | question | ack
-subject: <一句話標題>
-refs:                   # 可選：branch / commit / 檔案 / reply_to: <前一則 id>
-status: open            # open | done
+id: 01M0WG3WJF6AX39B2RGCPVN2CM
+pair: w3:t3
+from: claude
+to: {{PEER}}
+type: review-request
+subject: '一句話標題'
+refs: 'branch / commit / 檔案'
+status: open
 ---
 
 <正文：要對方做什麼、脈絡、驗收條件。一則只講一件事。>
 ```
+
+欄位說明(**不要把這些註解抄進真正的訊息**——validator 會把 `# ...` 當成值的一部分):
+
+| 欄位 | 值 |
+|---|---|
+| `id` | `next-id.sh` 產生的 ULID,**必須與檔名前綴相同** |
+| `pair` | 發訊方的 herdr tab_id(多組並存時用來路由) |
+| `from` / `to` | `claude` \| `{{PEER}}` |
+| `type` | `review-request` \| `review-result` \| `task` \| `reply` \| `question` \| `ack` |
+| `subject` / `refs` | **你自己寫的文字 → 單引號**(見下) |
+| `reply_to` | 可選,**只在回覆時出現**:填**對方那則**的 id(不是自己的)。開新話題時整行省略 |
+| `status` | `open` \| `done` \| `closed` |
+
+> ⚠️ **human 欄位用單引號,machine 欄位不要加引號。**
+> `subject`、`refs`(未來的 `note`/`alias`)是你自己寫的文字 → **一律單引號**;
+> `id`、`from`、`to`、`type`、`status`、`pair`、`reply_to` 是機器欄位 → **不可加引號**
+> (加了會被 validator 判為格式錯誤)。`publish.sh` 會驗證 frontmatter,
+> **YAML parser 讀不動的草稿會被擋下、不准上架**。最常見的陷阱是 plain 值裡出現 `": "`——
+> `refs: branch x; reply_to: 01M0…` **不是合法 YAML**(本專案的 bus 在 gate 出現前
+> 已經publish 了 13 則這種訊息,永遠修不掉,因為訊息一旦發布就不可變)。
+>
+> 規則:單引號、內部單引號寫兩次(`'it''s'`)、**不可換行**。
+> `collab/bin/fm-quote.sh <文字>` 直接產生合規的值;
+> `collab/bin/check-envelope.sh <檔>` 會在你 publish 前告訴你哪裡不合規。
 
 ## 收發流程（一輪）
 

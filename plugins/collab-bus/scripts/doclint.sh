@@ -55,7 +55,8 @@ run_lint() {
   # Require the files the rules are actually about.
   for f in commands/init.md commands/send.md commands/status.md \
            skills/collab/SKILL.md templates/PROTOCOL.template.md \
-           scripts/next-id.sh scripts/publish.sh scripts/knock.sh scripts/bootstrap.sh; do
+           scripts/next-id.sh scripts/publish.sh scripts/knock.sh scripts/bootstrap.sh \
+           scripts/check-envelope.sh scripts/fm-quote.sh scripts/lib/envelope.sh; do
     if [ ! -f "$ROOT/$f" ] || [ ! -r "$ROOT/$f" ]; then
       echo "FAIL: expected file missing or unreadable: $ROOT/$f"
       return 1
