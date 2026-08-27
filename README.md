@@ -59,7 +59,8 @@ cd <your project>
 /path/to/collab-bus/plugins/collab-bus/scripts/bootstrap.sh codex
 ```
 
-That scaffolds `collab/`, vendors `collab/bin/{next-id,publish,knock}.sh`, and renders
+That scaffolds `collab/`, vendors the whole of `collab/bin/` (allocator, publisher,
+transport, envelope/registry/routing tools and their libraries), and renders
 `collab/PROTOCOL.md` — everything either agent needs. Re-running it on a project that
 already has a bus **migrates** instead: it refreshes `collab/bin/` and leaves your
 PROTOCOL.md and messages untouched. `/collab-bus:init` calls this same script and then
@@ -103,14 +104,38 @@ the same `collab/PROTOCOL.md` and runs the same vendored scripts.
   independently with a negligible collision probability.
 - **Atomic publish** (v0.6): `next-id.sh` returns a hidden **draft**
   (`.<ULID>-…md.part`); the sender writes the body and then `scripts/publish.sh`
-  renames it to the final `<ULID>-…md`. A same-dir rename is atomic, so a receiver
-  scanning the inbox never reads a reserved-but-empty message. publish.sh refuses a
-  0-byte draft — the last guard against shipping an empty message.
+  publishes it as the final `<ULID>-…md` with a **no-replace `link(2)` + unlink** —
+  not a rename, because POSIX has no portable no-replace rename, and not `ln`, which
+  would link *inside* a directory of the same name. The final message appears
+  complete-or-not-at-all, so a receiver scanning the inbox never reads a
+  reserved-but-empty one, and an existing message is never clobbered. publish.sh
+  refuses a 0-byte draft — the last guard against shipping an empty message.
 - **Async knock** (v0.6.1): `knock.sh --submit-only` fires a nudge and returns as
   soon as herdr accepts it (no pre-settle, no `--wait`) — for symmetric / mesh use
   where a synchronous reply would deadlock a peer that is waiting on you. The
   receiver reconciles its inbox at turn start (durable files, at-least-once), so a
   best-effort nudge is enough. The default knock stays synchronous.
+- **Envelope** (v0.8): messages carry `schema: 2` with a `thread`, stable
+  `from_agent`/`to_agent` participant ids, and an `intent`. `publish.sh` validates the
+  frontmatter at the boundary and refuses anything a YAML parser would reject — a
+  published message is immutable, so the boundary is the only place to stop a bad one.
+  Legacy schema-1 messages stay readable; both are accepted side by side.
+- **Addressing** (v0.8): a message is addressed to a **participant**, not to a pane or a
+  tab. `collab/participants/<id>.json` is a durable identity; `collab/bindings/<id>.json`
+  is the live process holding it, and only the binding carries pane/tab/session. Move the
+  pane or restart the agent and the address still resolves. `scripts/route.sh list`
+  returns the messages addressed to you — matching `to_agent` exactly, falling back to
+  `pair` only for legacy messages, and naming anything unroutable on stderr rather than
+  guessing or dropping it.
+- **Trust anchor** (v0.8): `collab/bin/` is vendored *into the project*, so it is also the
+  thing under suspicion. Before running any of it, the caller runs `preflight.sh` from
+  code it already trusts — the installed plugin, or the peer's own clone — and uses only
+  the bin path it returns. preflight refuses a symlinked `collab/`, `bin/` or `lib/`,
+  requires every vendored script to be regular, readable and executable, and refuses to
+  run at all if it finds itself inside a vendored bin.
+- **Capabilities**: `collab/bus.json` records what this endpoint reads, writes, and
+  demands of others, so peers negotiate on machine facts rather than on a version
+  somebody typed into a document.
 - **Protocol**: `collab/PROTOCOL.md` (written by `init`) is the per-project contract.
 
 ## When to use this vs a review plugin
@@ -130,6 +155,11 @@ plugins/collab-bus/
 ├── scripts/next-id.sh              # allocate a message: mint a ULID, create a .md.part draft
 ├── scripts/publish.sh              # atomic publish: rename the draft to the final .md
 ├── scripts/knock.sh                # herdr transport: agent prompt --wait (+ --submit-only)
+├── scripts/participant.sh          # identity vs live binding: register/bind/ensure/snapshot
+├── scripts/route.sh                # which inbox messages are addressed to me
+├── scripts/preflight.sh            # vet a project's vendored bin from trusted code
+├── scripts/check-envelope.sh       # validate frontmatter before publishing
+├── scripts/lib/                    # envelope, manifest and inventory codecs
 └── templates/PROTOCOL.template.md  # per-project protocol, rendered by bootstrap.sh
 ```
 
