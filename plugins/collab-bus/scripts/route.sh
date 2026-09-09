@@ -55,7 +55,18 @@ MY_AGENT=""; MY_KIND=""; MY_TAB=""
 _r_live_tab() {
   command -v herdr >/dev/null 2>&1 || return 1
   local out t
-  out="$(herdr pane current 2>/dev/null)" || return 1
+  # `--current` for the reason participant.sh documents: the calling pane, never whatever
+  # pane a UI client happens to have focused. The bare form is the herdr 0.8 fallback and
+  # is tried ONLY on a CLI syntax error (exit 2); a server/runtime failure (exit 1) must
+  # not be retried bare, because that retry can succeed with the focused pane's tab and
+  # this function's answer decides which legacy messages we claim.
+  local rc=0
+  out="$(herdr pane current --current 2>/dev/null)" || rc=$?
+  if [ "$rc" = 2 ]; then
+    rc=0
+    out="$(herdr pane current 2>/dev/null)" || rc=$?
+  fi
+  [ "$rc" = 0 ] || return 1
   t="$(printf '%s' "$out" | sed -n 's/.*"tab_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   [ -n "$t" ] || return 1
   printf '%s' "$t"

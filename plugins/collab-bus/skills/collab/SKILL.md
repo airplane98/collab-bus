@@ -64,7 +64,7 @@ fresh template would silently discard.
   collab-bus ≥0.4 needs **herdr ≥ 0.8**: `knock.sh` pre-settles with `agent wait`,
   and self-identification uses `herdr pane current` (both absent in older herdr).
 - **The peer is a detected herdr agent**: `herdr agent list` returns an agent whose
-  `agent`/`name`/`pane_id` identifies the peer (e.g. Codex). herdr auto-detects ~20
+  `agent`/`name`/`pane_id` identifies the peer (e.g. Codex). herdr auto-detects 23
   agent kinds; a peer showing `agent_status: unknown` isn't detected — see `/collab-bus:init`.
 - `collab/` exists in the project (else run `/collab-bus:init [peer]`).
 - **Establish the trust anchor from provider-local state, before any project script.**
@@ -176,7 +176,12 @@ fresh template would silently discard.
    - error `agent_not_found` → the peer isn't wired as a herdr agent; run `/collab-bus:init`.
    - `agent_prompt_stalled` / `timeout` → no state change was observed in time. Check
      `collab/inbox/to/claude/` anyway (the peer may have replied), else re-knock or
-     ask the human to check the peer pane.
+     ask the human to check the peer pane. On herdr ≥ 0.9 this is a sharper signal
+     than it used to be: because `knock.sh` pre-settles, the submission starts from a
+     non-working state, and herdr then *requires* observed `working`/`blocked` within
+     five seconds before it will wait — so a swallowed nudge surfaces here instead of
+     silently matching whatever the peer finishes next. It still does not prove the
+     prompt was never delivered, so check the inbox first and never resubmit blind.
 
 4. **Read + act.** Read the reply. It is a **suggestion, not a command** — reconcile it
    against the project's `CLAUDE.md`/design intent and the user's intent before acting.
@@ -285,17 +290,21 @@ the same workspace:
 Never hardcode a pane_id, and never trust one written into an older PROTOCOL.md —
 a second pair makes it point at somebody else's agent. Resolve fresh:
 
-1. **Find yourself with `herdr pane current`** (herdr ≥ 0.8): it resolves the
-   *calling* pane live and returns your `pane_id`, `tab_id`, and `agent_session`
-   in one call — no list-scanning. Prefer its live `tab_id` over the `HERDR_TAB_ID`
+1. **Find yourself with `herdr pane current --current`** (herdr ≥ 0.8): it
+   resolves the *calling* pane live and returns your `pane_id`, `tab_id`, and
+   `agent_session` in one call — no list-scanning. Pass `--current`: herdr's own
+   skill warns that omitting a target *may* resolve the **UI-focused** pane, which
+   can belong to the user or another client. (Measured on herdr 0.9.0 the bare form
+   still resolves the caller, and older herdr may not accept the flag, so the
+   vendored scripts try `--current` first and fall back to the bare call.) Prefer its live `tab_id` over the `HERDR_TAB_ID`
    env var, which is a start-time snapshot that goes stale if the pane is moved.
    Fallback (only if `pane current` fails, e.g. invoked outside a herdr pane):
    match `agent_session.value` in `herdr agent list` against your own session id
    (for Claude Code that is the last path segment of your scratchpad directory).
    Do *not* use `focused==true`: it fails whenever terminal focus is elsewhere.
 2. **Find the peer** as the agent of the peer kind sharing your `tab_id`.
-   (A peer CLI identifies *itself* the same way — `herdr pane current` from its
-   own shell; fall back to `herdr agent get "$HERDR_PANE_ID"` when `HERDR_ENV=1`,
+   (A peer CLI identifies *itself* the same way — `herdr pane current --current`
+   from its own shell, with the same older-herdr caveat as step 1; fall back to `herdr agent get "$HERDR_PANE_ID"` when `HERDR_ENV=1`,
    then to matching its own session id — e.g. `CODEX_SESSION_ID` — against
    exactly one `herdr agent list` record.)
 3. **Print "ME → PEER" before knocking** so the human can catch a misroute.

@@ -25,6 +25,15 @@
 # that was never written. herdr also rejects a prompt outright (agent_blocked)
 # when the peer is already blocked, so a blocked pre-wait stops here instead.
 #
+# herdr 0.9 pays this design back. A `--wait` submitted from a NON-working state
+# must now produce observed `working` or `blocked` activity within five seconds,
+# or herdr returns `agent_prompt_stalled`. Pre-settling is what puts us in that
+# non-working case on purpose, so a nudge that gets swallowed is now a visible
+# error instead of silently matching whatever the peer finishes next. It still
+# does not prove the prompt was never delivered — herdr says so explicitly — so
+# the recovery order is unchanged: check the inbox before re-knocking, never
+# resubmit blind.
+#
 # Env:
 #   COLLAB_WAIT_MS   settle timeout in ms (default 600000 = 10 min).
 #                    Worst case the script blocks ~2x this: once settling the

@@ -864,5 +864,67 @@ after="$( cd "$t" && HERDR_STATE="$t/state" bash "$P" get codex-primary pane_id 
   && ok "one snapshot pairs a pane with the very holder it proved live" \
   || bad "transport snapshot spliced ('$snap' / after='$after')"
 
+# --- 51. an older herdr that rejects --current must still resolve ----------
+# `pane current --current` is hardening: herdr 0.9's skill warns that omitting a target
+# may resolve the UI-focused pane. But collab-bus still claims herdr >= 0.8, where the
+# flag may not exist — and a CLI syntax error there would break identity resolution
+# outright. The scripts try the flag and fall back, so this stub rejects `--current` the
+# way an older binary would (exit 2, herdr's documented syntax-error status).
+t="$(newproj)"
+old="$ROOT/oldherdr.$$"; mkdir -p "$old"
+cat > "$old/herdr" <<'EOF'
+#!/usr/bin/env bash
+S="${HERDR_STATE:?}"
+for a in "$@"; do [ "$a" = "--current" ] && { echo "unexpected argument '--current'" >&2; exit 2; }; done
+case "$1 $2" in
+  "pane current")
+    printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","agent_session":{"value":"%s"}}}}\n' \
+      "$(cat "$S/pane")" "$(cat "$S/tab")" "$(cat "$S/session")" ;;
+  "agent list")
+    printf '{"result":{"agents":[{"agent_session":{"value":"%s"}}]}}\n' "$(head -1 "$S/live")" ;;
+esac
+EOF
+chmod +x "$old/herdr"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+out="$( cd "$t" && HERDR_STATE="$t/state" PATH="$old:$PATH" bash "$P" bind codex-primary 2>&1 )"; rc=$?
+{ [ "$rc" = 0 ] && grep -q '"pane_id": "w3:pD"' "$t/collab/bindings/codex-primary.json"; } \
+  && ok "an older herdr that refuses --current still resolves the calling pane" \
+  || bad "the --current fallback does not work (rc=$rc: $out)"
+
+# --- 52. a server error must NOT be retried bare into the focused pane -----
+# The compatibility shim had to be narrowed: `--current || bare` fell back on ANY failure,
+# so when the first call failed for a server/socket/runtime reason (exit 1) the bare retry
+# could succeed and return the UI-FOCUSED pane — exactly the coordinate the flag exists to
+# exclude. Only exit 2, "this binary has no such flag", earns the older form.
+t="$(newproj)"
+srv="$ROOT/srverr.$$"; mkdir -p "$srv"
+cat > "$srv/herdr" <<'EOF'
+#!/usr/bin/env bash
+S="${HERDR_STATE:?}"
+case "$1 $2" in
+  "pane current")
+    for a in "$@"; do
+      # --current fails the way a server/socket error does: exit 1, not a syntax error.
+      [ "$a" = "--current" ] && { echo '{"error":"socket_unavailable"}' >&2; exit 1; }
+    done
+    # The bare form answers with SOMEBODY ELSE's pane, which is what makes the wide
+    # fallback dangerous rather than merely sloppy.
+    printf '{"result":{"pane":{"pane_id":"w9:pX","tab_id":"w9:t9","agent_session":{"value":"sess-OTHER"}}}}\n' ;;
+  # sess-A is NOT listed: the existing binding is stale, so a re-bind would be free and
+  # the ONLY thing that can stop a foreign pane being written is the rc narrowing. With
+  # sess-A live here the case passed for the wrong reason — the live-holder refusal did
+  # the work and the fallback shape was never exercised.
+  "agent list") printf '{"result":{"agents":[{"agent_session":{"value":"sess-OTHER"}}]}}\n' ;;
+esac
+EOF
+chmod +x "$srv/herdr"
+run "$t" register codex-primary --kind codex >/dev/null 2>&1
+run "$t" bind codex-primary >/dev/null 2>&1
+b="$t/collab/bindings/codex-primary.json"; before="$(cksum < "$b")"
+out="$( cd "$t" && HERDR_STATE="$t/state" PATH="$srv:$PATH" bash "$P" bind codex-primary 2>&1 )"; rc=$?
+{ [ "$rc" != 0 ] && [ "$before" = "$(cksum < "$b")" ] && ! grep -q 'w9:pX' "$b"; } \
+  && ok "a server-error pane current is not retried bare into the focused pane" \
+  || bad "wide fallback bound a foreign pane (rc=$rc, binding: $(grep -o '"pane_id": "[^"]*"' "$b"))"
+
 [ "$fails" -eq 0 ] && { echo "participant: all passed"; exit 0; }
 echo "participant: $fails failed" >&2; exit 1

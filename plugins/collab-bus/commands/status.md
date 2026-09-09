@@ -23,7 +23,7 @@ Report the current collab-bus state. Peer from `$1` (default `codex`).
    messages. Anything `route.sh` calls unrouted or unreadable belongs
    in the report too: those are messages nobody will pick up.
 3. **Peer agent (herdr)**: resolve *your* peer, not just "a peer of that kind":
-   `herdr pane current` gives your own `tab_id` live (fallback: match your session
+   `herdr pane current --current` gives your own `tab_id` live (fallback: match your session
    id against `agent_session.value` in `herdr agent list`), then require **exactly
    one** agent of the peer kind in that tab; if there are zero or several, say so
    and stop rather than reporting somebody else's agent.

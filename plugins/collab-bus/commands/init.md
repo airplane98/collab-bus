@@ -58,7 +58,7 @@ agent, the onboarding message, and the handshake.
    do **not** bake it into PROTOCOL.md. With more than one pair in the workspace a
    stored pane_id points at somebody else's agent; the template therefore tells
    agents to resolve by `tab_id` every round.
-   - **Identify yourself first** with `herdr pane current` — it resolves the calling
+   - **Identify yourself first** with `herdr pane current --current` — it resolves the calling
      pane live and gives your `pane_id` and `tab_id` in one call (fallback if it
      fails: match your session id against `agent_session.value` in
      `herdr agent list`; never `focused`). Then accept a peer of the right kind

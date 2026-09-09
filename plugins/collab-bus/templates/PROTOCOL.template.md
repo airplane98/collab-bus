@@ -235,8 +235,10 @@ pair: w3:t3
 
 ```bash
 # 1. 我是誰（herdr >= 0.8，雙方通用）：pane current 即時解析「呼叫者自己的 pane」，
-#    一個指令拿到自己的 pane_id / tab_id / agent_session
-herdr pane current | jq -r '.result.pane | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
+#    一個指令拿到自己的 pane_id / tab_id / agent_session。
+#    加 --current 明確指向「呼叫者」：省略目標時 herdr 可能改用 UI 聚焦的那個 pane
+#    （可能是別人的）。舊版 herdr 若不認這個旗標，去掉它即可。
+herdr pane current --current | jq -r '.result.pane | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
 
 # 2. 我的 peer：tab_id 與上面相同、agent 為對方的那一筆
 herdr agent list | jq -r --arg tab "<上一步的 tab>" '.result.agents[]

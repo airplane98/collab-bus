@@ -480,5 +480,52 @@ mine="$( cd "$t9" && HERDR_STATE="$t9/sC" bash "$R" list --agent reviewer-a 2>/d
   && ok "a kind read from the registry routes an id that does not name its kind" \
   || bad "opaque id mishandled (kind=$kind prc=$prc dest=$dest mine=$mine)"
 
+# --- 29-30. route resolves its live tab under both herdr failure modes -----
+# route duplicates participant's `pane current` shim, so it needs its own oracles: the
+# same two rc values decide whether a legacy message is claimed, and a shared comment is
+# not a shared test.
+t10="$(newproj)" || exit 1
+IN10="$t10/collab/inbox/to/codex"
+msg1 "$IN10/legacy.md" w3:t6 open          # addressed to sess-B's real tab
+
+# rc=2 — an older herdr without the flag. The fallback must still find the live tab, or
+# every legacy message becomes unrouted on 0.8.
+old10="$ROOT/oldherdr10.$$"; mkdir -p "$old10"
+cat > "$old10/herdr" <<'EOF'
+#!/usr/bin/env bash
+S="${HERDR_STATE:?}"
+for a in "$@"; do [ "$a" = "--current" ] && { echo "unexpected argument" >&2; exit 2; }; done
+case "$1 $2" in
+  "pane current")
+    printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","agent_session":{"value":"%s"}}}}\n' \
+      "$(cat "$S/pane")" "$(cat "$S/tab")" "$(cat "$S/session")" ;;
+  "agent list") printf '{"result":{"agents":[{"agent_session":{"value":"%s"}}]}}\n' "$(head -1 "$S/live")" ;;
+esac
+EOF
+chmod +x "$old10/herdr"
+out="$( cd "$t10" && HERDR_STATE="$t10/sB" PATH="$old10:$PATH" bash "$R" list --agent codex-primary 2>/dev/null )"
+printf '%s' "$out" | grep -q 'legacy\.md' \
+  && ok "route's syntax-error fallback still resolves the live tab" \
+  || bad "route lost the tab on an older herdr (out=$out)"
+
+# rc=1 — a server error. A bare retry could answer with the FOCUSED pane's tab; if route
+# accepted it, a message belonging to another pair would be claimed as mine.
+srv10="$ROOT/srverr10.$$"; mkdir -p "$srv10"
+cat > "$srv10/herdr" <<'EOF'
+#!/usr/bin/env bash
+S="${HERDR_STATE:?}"
+case "$1 $2" in
+  "pane current")
+    for a in "$@"; do [ "$a" = "--current" ] && { echo '{"error":"socket_unavailable"}' >&2; exit 1; }; done
+    printf '{"result":{"pane":{"pane_id":"w3:pQ","tab_id":"w3:t6","agent_session":{"value":"sess-OTHER"}}}}\n' ;;
+  "agent list") printf '{"result":{"agents":[{"agent_session":{"value":"%s"}}]}}\n' "$(head -1 "$S/live")" ;;
+esac
+EOF
+chmod +x "$srv10/herdr"
+out="$( cd "$t10" && HERDR_STATE="$t10/sB" PATH="$srv10:$PATH" bash "$R" list --agent codex-primary 2>"$t10/err.30" )"; rc=$?
+{ ! printf '%s' "$out" | grep -q 'legacy\.md' && [ "$rc" = 1 ] && grep -q 'legacy\.md' "$t10/err.30"; } \
+  && ok "a server-error pane current leaves legacy messages unrouted, not claimed" \
+  || bad "route claimed a legacy message through a bare retry (rc=$rc out=$out)"
+
 [ "$fails" -eq 0 ] && { echo "route: all passed"; exit 0; }
 echo "route: $fails failed" >&2; exit 1

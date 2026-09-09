@@ -52,7 +52,7 @@ name the candidates, and ask which one — do not pick.
      ```
      `absent` means that process is gone; `unknown` means herdr could not say. Report
      either rather than knocking at whatever pane the file remembers. Find yourself
-     with `herdr pane current` (fallback: match your session id against
+     with `herdr pane current --current` (fallback: match your session id against
      `agent_session.value` in `herdr agent list` — do NOT use `focused`, it breaks when
      focus is elsewhere). Print `ME → PEER` before knocking.
 3. **Allocate a draft with `next-id.sh`** (v0.5: a ULID, no lock). Never hand-craft an id or compute "highest + 1" — that counter race is exactly what the ULID rewrite removed:

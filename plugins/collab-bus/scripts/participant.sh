@@ -349,7 +349,27 @@ LIVE_PANE=""; LIVE_TAB=""; LIVE_SESSION=""
 resolve_live() {
   command -v herdr >/dev/null 2>&1 || { _p_err "herdr not found — cannot resolve this process's coordinates"; return 1; }
   local out
-  out="$(herdr pane current 2>/dev/null)" || { _p_err "herdr pane current failed — are we inside a herdr pane?"; return 1; }
+  # `--current` targets the CALLING pane explicitly. herdr 0.9's own skill warns that
+  # omitting a target "may use the UI-focused pane, which can belong to the user or
+  # another client" — and a focused-pane answer would bind this identity to somebody
+  # else's coordinates. Measured on 0.9.0 the bare form still resolves the caller via the
+  # inherited context, so this is hardening, not a fix; the bare call is kept as a
+  # fallback because the flag may not exist on the herdr 0.8 we still claim to support,
+  # and a syntax error there would break identity resolution outright.
+  # Fall back ONLY on a CLI syntax error. herdr documents exit 2 for syntax and exit 1
+  # for server/socket/runtime failures, and the difference decides correctness here: a
+  # bare retry after exit 1 can succeed and hand back the UI-FOCUSED pane — the very
+  # coordinate this flag exists to exclude — so a compatibility shim written as
+  # `--current || bare` would quietly reintroduce the risk it was added to remove. Only
+  # "this binary has no such flag" earns the older form.
+  local _pc_rc=0
+  out="$(herdr pane current --current 2>/dev/null)" || _pc_rc=$?
+  if [ "$_pc_rc" = 2 ]; then
+    _pc_rc=0
+    out="$(herdr pane current 2>/dev/null)" || _pc_rc=$?
+  fi
+  [ "$_pc_rc" = 0 ] \
+    || { _p_err "herdr pane current failed — are we inside a herdr pane?"; return 1; }
   LIVE_PANE="$(printf '%s' "$out" | sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   LIVE_TAB="$(printf '%s' "$out" | sed -n 's/.*"tab_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   LIVE_SESSION="$(printf '%s' "$out" | sed -n 's/.*"agent_session"[^}]*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"

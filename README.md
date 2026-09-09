@@ -86,7 +86,7 @@ the same `collab/PROTOCOL.md` and runs the same vendored scripts.
    (`herdr pane split --current` + `herdr agent start`, so the peer lands in your own
    tab), writes the protocol, and runs the onboarding handshake. Manual alternative:
    open a pane **in the same tab** and run the peer CLI there (`cd <project> && codex`);
-   herdr auto-detects ~20 agent kinds.
+   herdr auto-detects 23 agent kinds.
 2. From then on, each round is one knock: `knock.sh` settles any in-flight peer turn
    (`herdr agent wait`), then `herdr agent prompt <peer> --wait` submits and blocks
    until the peer finishes.
