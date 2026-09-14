@@ -91,8 +91,13 @@ agent, the onboarding message, and the handshake.
    (frontmatter per PROTOCOL, `type: task`, `status: open`) instructing the peer to:
    read `collab/PROTOCOL.md` and any project `CLAUDE.md`/`AGENTS.md`; configure
    `COLLAB_BUS_TRUSTED_SCRIPTS` in provider-local state to its own clone/install outside
-   the project, run that trusted `preflight.sh --dir <project>`, and confirm the role it
-   is taking this round; then reply into `collab/inbox/to/claude/` using **only the
+   the project, then run that trusted `preflight.sh --dir "$(pwd -P)"` **from the current
+   project root**, and confirm the role it is taking this round. The anchor has two parts
+   and only one is a constant: the scripts path is fixed and shared across every project,
+   but the inspected project **must be `$(pwd -P)`, never a hardcoded path** — provider-local
+   config (e.g. a global `~/.codex/AGENTS.md`) is read in every project, so a project-specific
+   `--dir` written there silently vets the wrong project's bin from the next project on.
+   Tell the peer this explicitly when it saves the anchor. then reply into `collab/inbox/to/claude/` using **only the
    `$BIN` returned by that preflight** (never a fixed number, and publish so its reply is
    never read half-written) with `reply_to: <the onboarding id you just got>`
    and `pair: <your tab_id>` — its stack summary + whether it can run git/tests —
