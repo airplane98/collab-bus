@@ -197,12 +197,50 @@ pair: w3:t3
 
 ## 硬規則（避免互相踩）
 
-- **不同時改同一檔程式碼**。慣例：Claude 寫 code（開 branch），{{PEER}} 只讀 diff + 寫意見。
+- **同一 checkout 同時只有一個 writer（跨所有 thread,不是 per-thread 放行）**（見下節
+  「兩種 review 模式」）。預設
+  **author-fixes**:Claude 寫 code（開 branch），{{PEER}} 只讀 diff + 寫意見；
+  **finder-fixes** 模式只放寬「reviewer 永遠不能寫」這一點,不放寬「一次一個 writer」。
 - **git branch 是第二層匯流排**：Claude commit 到 feature branch，{{PEER}} `git diff` review。
 - **不碰預設分支**：實作走 branch，人類決定何時 merge。
 - 一則訊息只講一件事；大任務拆多則。
 - 訊息處理完一定要搬 `archive/`，`inbox/to/*` 只留 `open` 的，避免重複執行。
 - 專案自己的 `CLAUDE.md` / `AGENTS.md` 等規範仍然適用，且優先於本協定的一般性建議。
+
+## 兩種 review 模式:author-fixes / finder-fixes
+
+一次 review 走兩種模式之一。**author-fixes 在既有專案授權下是預設;啟用 finder-fixes
+才需要雙方明確同意。**
+
+- **author-fixes(預設)**:reviewer 只報告,作者套用每個修正,reviewer 不改 target
+  ——就是上面「一次一個 writer」的預設慣例。
+- **finder-fixes**:誰發現 bug 誰可以修,修完把 target 交回**驗證**。筆跟著發現走,
+  用來平衡雙方的寫入負擔。
+
+finder-fixes 是 opt-in,且**下列全部成立才允許**:
+
+- **git target**:被 review 的碼在 git repo 裡(`git -C <target> rev-parse
+  --show-toplevel`),且 bus runtime 是另一棵樹。非 git 的 target(如 Dropbox 交付根目錄)
+  只能 author-fixes。
+- **專案 owner-rule 優先**:專案 `CLAUDE.md` 若禁止 reviewer 寫,壓過本節,不得啟用 finder。
+- **雙方同意**:initiator 在訊息 body 提 `fix-policy: finder`,對方**明確接受**才開始
+  finder-fixes;author-fixes 是預設,不需這道手續。finder 啟用後,某則 mode 缺失/矛盾或
+  context 遺失 → **停下重談**,不各自默默退回 author(那會偷改誰在寫);每則
+  action/handoff/verify reply 都重述 mode、引用同一份約定,只在 handoff 邊界切換。
+- **一次一個 writer**:交手出去的 checkout,在對方手上時不要動它;停掉它上面的背景寫入程序;
+  nudge timeout 或對方 idle **不代表**筆回來了。
+- **每次交手前、離開前都先 commit**:handoff 用 `type: fix-applied`、commit 放 `refs`,
+  講明要驗什麼;接收方動手前先確認在對的 branch/commit 且 tree 乾淨。**不符就停下回報**
+  ——絕不覆蓋 checkout 狀態、不把別人的 edit 併進來、不 `reset --hard` / `clean` /
+  force-push 去製造乾淨。
+
+**這是 best-effort,不是滴水不漏。** 兩個 writer 若無視「一次一個」,可能丟掉**未 commit**
+的編輯;git 無法重建從未記錄進去的內容,曾 stage/stash 的有時留得下、但不要依賴。commit
+是復原檢查點,**只在所需 objects 還在時有效**——reflog 會過期,commit 不是備份。各自一棵
+worktree 只隔離未 commit 的**source** 編輯,不涵蓋共享的 refs/config 或外部副作用;checkout
+的擁有權是**合作約定,bus 不強制**。finder-fixes 用這個殘餘風險換工作量平衡。驗證方回「乾淨」、或帶證據交回
+「修錯了/新缺陷」、或老實說「現在無法驗證」(不准假造 verdict、不准為了驗證改 source);
+原 request 由**它的 recipient** 在所有 findings 都有結論後收尾——一個 fix 通過不等於關掉整案。
 
 ## 多組 Claude+{{PEER}} 並存時（重要）
 

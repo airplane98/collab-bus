@@ -190,6 +190,55 @@ fresh template would silently discard.
 5. **Archive.** Move the processed reply to `collab/inbox/archive/`. Keep `inbox/to/*`
    holding only `open` items so nothing runs twice.
 
+## Two review modes: author-fixes and finder-fixes
+
+A review runs in one of two modes. **author-fixes is the default under existing
+project authorization; enabling finder-fixes needs explicit bilateral acceptance.**
+
+- **author-fixes (default).** The reviewer reports findings; the author applies
+  every fix; the reviewer never edits the target. This is the hard rule the
+  PROTOCOL states as "one writer per checkout".
+- **finder-fixes.** Whoever finds a defect may fix it, then hands the target back
+  to *verify*. The pen follows the finding — use it to balance who does the fixing.
+
+finder-fixes is opt-in and only allowed under ALL of:
+
+- **git target.** The code under review is in a git repo (`git -C <target>
+  rev-parse --show-toplevel`), and the bus runtime is a separate tree. A non-git
+  target (e.g. a Dropbox deliverable root) is author-fixes only.
+- **owner rule wins.** A project CLAUDE.md that forbids the reviewer from writing
+  overrides this; do not enable finder-fixes there.
+- **bilateral agreement.** The initiator proposes `fix-policy: finder` in the
+  request body; the other side must explicitly accept before finder-fixes begins.
+  Author-fixes needs no such handshake — it is the default. Once finder is active,
+  a message with a missing or conflicting mode, or lost context, means **stop and
+  re-establish the agreement** — never silently switch back to author (that changes
+  who is writing). Restate the mode in every action / handoff / verify reply,
+  referencing the one accepted agreement, and switch modes only at a handoff
+  boundary.
+- **one writer at a time.** Do not edit a checkout while it is handed to the other
+  side; stop background writers (formatter/watcher) on it; a nudge timeout or peer
+  idle does NOT mean it is yours again.
+- **commit before every handoff and before you step away.** The handoff (`type:
+  fix-applied`, the commit in `refs`) says what to verify; the receiver checks it
+  is on the expected branch/commit with a clean tree before editing. **Any
+  mismatch: stop and report** — never overwrite checkout state, stage someone
+  else's edits, or `reset --hard` / `clean` / force-push to manufacture a clean
+  handoff.
+
+**Best-effort, not airtight.** Two writers who ignore "one writer at a time" can
+lose an *uncommitted* edit. Git cannot reconstruct content never recorded in it;
+staged or stashed content may sometimes survive, but do not rely on that. Commits
+are recovery checkpoints only while the required objects remain available —
+reflogs expire and a commit is not a backup. Separate worktrees isolate
+uncommitted *source* edits, not shared Git refs/config or external side effects;
+checkout ownership stays cooperative, not enforced by the bus. finder-fixes trades
+this residual risk for a balanced workload. The verifier replies clean, or hands back a wrong-fix /
+new-defect with evidence, or says plainly it cannot verify (never fake a verdict,
+never rewrite source to force one). The original request is closed by **its
+recipient** once all findings are dispositioned — one fix passing does not close
+it. Full rationale: `docs/proposals/review-modes.md`.
+
 ## The full loop (implement → review → land → sign-off)
 
 A complete collaboration is usually: Claude proposes → peer reviews → Claude lands the
