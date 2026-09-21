@@ -20,11 +20,17 @@
 # What it does:
 #   fresh project  — scaffold collab/, vendor collab/bin/{next-id,publish,knock,
 #                    check-envelope,fm-quote}.sh plus collab/bin/lib/envelope.sh,
-#                    render collab/PROTOCOL.md from the template (stamped with the
-#                    plugin version).
-#   existing bus   — MIGRATE: re-vendor collab/bin/ only. It never overwrites
-#                    PROTOCOL.md (it usually carries project-specific edits) and never
-#                    touches message files; it reports what to patch by hand.
+#                    render the protocol files from the templates (stamped with the
+#                    plugin version) and record what it wrote in collab/.protocol-vendored.
+#   existing bus   — MIGRATE: re-vendor collab/bin/, never touch message files, and:
+#                    · v0.9 layout (collab/.protocol-vendored present): update each
+#                      collab-bus-owned protocol file (PROTOCOL.md, PROTOCOL-modes.md,
+#                      DESIGN-DECISIONS.md) whose hash still matches what was recorded;
+#                      a file a human edited is KEPT and reported, never overwritten.
+#                      collab/PROJECT.md belongs to the project and is never overwritten.
+#                    · older bus (no .protocol-vendored): protocol files are left alone,
+#                      as before; `--adopt` opts in to the v0.9 layout, backing the
+#                      current files up as *.pre-<version> first.
 #
 # Safety: it refuses to write through a symlink (a symlinked collab/, collab/bin/, or
 # vendored file could redirect the write outside the project), and re-vendors via a
@@ -35,11 +41,18 @@
 # template's role names generalised — not done here.
 #
 # Exit: 0 scaffolded or migrated; 2 bad usage; 1 unsafe/missing source or target.
+#
+# Options: --dir <project>  target another directory (default: cwd)
+#          --adopt          (older bus only) switch to the v0.9 protocol layout
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PLUGIN_ROOT="$(cd "$SELF/.." && pwd -P)"
-TEMPLATE="$PLUGIN_ROOT/templates/PROTOCOL.template.md"
+TPL_DIR="$PLUGIN_ROOT/templates"
+TEMPLATE="$TPL_DIR/PROTOCOL.template.md"
+# collab-bus OWNS these and may replace them on a re-run; the project owns PROJECT.md.
+PROTO_GENERIC="PROTOCOL.md PROTOCOL-modes.md DESIGN-DECISIONS.md"
+PROTO_MF_NAME=".protocol-vendored"
 MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
 # publish.sh REQUIRES lib/envelope.sh — vendoring the script without its gate would
 # leave a bus that silently accepts unvalidated messages, so the library and the two
@@ -50,10 +63,11 @@ MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
 # shellcheck disable=SC2206
 VENDOR=($COLLAB_BINS $COLLAB_LIBS)
 
-usage() { echo "usage: bootstrap.sh [peer] [--dir <project>]   (peer defaults to codex)" >&2; }
+usage() { echo "usage: bootstrap.sh [peer] [--dir <project>] [--adopt]   (peer defaults to codex)" >&2; }
 
 PEER=codex
 DIR="$PWD"
+ADOPT=0
 peer_set=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -61,7 +75,8 @@ while [ $# -gt 0 ]; do
       # Explicit arity check: `${2:?}` would exit 1, but the contract says bad usage is 2.
       [ $# -ge 2 ] || { echo "error: --dir needs a path" >&2; usage; exit 2; }
       DIR="$2"; shift 2 ;;
-    -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --adopt) ADOPT=1; shift ;;
+    -h|--help) sed -n '2,46p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "error: unknown option '$1'" >&2; usage; exit 2 ;;
     *)
       # One peer only: silently taking the last of `codex gemini` would scaffold a bus
@@ -85,7 +100,9 @@ case "$PEER" in
     echo "error: the peer cannot be '$PEER' — that is the other side of the bus" >&2; exit 2 ;;
 esac
 
-[ -f "$TEMPLATE" ] || { echo "error: template not found: $TEMPLATE" >&2; exit 1; }
+for _t in PROTOCOL PROTOCOL-modes DESIGN-DECISIONS PROJECT; do
+  [ -f "$TPL_DIR/$_t.template.md" ] || { echo "error: template not found: $TPL_DIR/$_t.template.md" >&2; exit 1; }
+done
 [ -d "$DIR" ] || { echo "error: target directory not found: $DIR" >&2; exit 1; }
 DIR="$(cd "$DIR" && pwd -P)"
 
@@ -343,25 +360,197 @@ commit_registry() { # create-missing-only; everything was validated by plan_regi
   done
 }
 
+# --- protocol files (v0.9) ----------------------------------------------------
+# collab-bus owns PROTOCOL.md / PROTOCOL-modes.md / DESIGN-DECISIONS.md and may replace
+# them on a re-run; the project owns PROJECT.md, which is never overwritten. What was
+# last installed is recorded (sha256) in collab/.protocol-vendored, so a re-run can tell
+# an untouched file (safe to update) from one a human edited (KEPT, with a warning).
+# Keeping rather than refusing preserves the migrate contract — a re-run still succeeds
+# and still refreshes collab/bin/ — and keeping rather than overwriting never eats the
+# project's rules. Rationale: DESIGN-DECISIONS.md §D.
+PROTO_MF="$COLLAB/$PROTO_MF_NAME"
+# Same trap as the fresh render below: Bash 5.2+ would expand an unescaped & in a
+# substitution's REPLACEMENT. Turn it off; older bash has no such option.
+shopt -u patsub_replacement 2>/dev/null || true
+
+proto_template() { # <dest-name> → template path
+  case "$1" in
+    PROTOCOL.md)         printf '%s\n' "$TPL_DIR/PROTOCOL.template.md" ;;
+    PROTOCOL-modes.md)   printf '%s\n' "$TPL_DIR/PROTOCOL-modes.template.md" ;;
+    DESIGN-DECISIONS.md) printf '%s\n' "$TPL_DIR/DESIGN-DECISIONS.template.md" ;;
+    PROJECT.md)          printf '%s\n' "$TPL_DIR/PROJECT.template.md" ;;
+    *) return 1 ;;
+  esac
+}
+
+sha256_of() { # <file> → lowercase hex on stdout
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else echo "error: need shasum or sha256sum to track the protocol files" >&2; return 1
+  fi
+}
+
+# Render <dest-name>'s template for <project> into a fresh temp file INSIDE collab/ (same
+# filesystem, so the later mv is a rename) and print its path.
+proto_render() { # <dest-name> <project>
+  local tpl tmp c
+  tpl="$(proto_template "$1")" || { echo "error: no template for $1" >&2; return 1; }
+  tmp="$(mktemp "$COLLAB/.proto.XXXXXX")" || { echo "error: cannot create a temp file in $COLLAB" >&2; return 1; }
+  c="$(cat "$tpl")"
+  c="${c//\{\{PROJECT\}\}/$2}"
+  c="${c//\{\{PEER\}\}/$PEER}"
+  c="${c//\{\{VERSION\}\}/$VERSION}"
+  printf '%s\n' "$c" > "$tmp"
+  printf '%s\n' "$tmp"
+}
+
+# A destination must be absent or a regular file; never a symlink (it could redirect the
+# write) and never something else.
+proto_dest_ok() { # <path> <label>
+  if [ -L "$1" ]; then echo "error: $2 is a symlink — refusing to write through it" >&2; return 1; fi
+  if [ -e "$1" ] && [ ! -f "$1" ]; then echo "error: $2 exists and is not a regular file" >&2; return 1; fi
+}
+
+# Replace the directory entry with <tmp> (rename): an existing file's inode — including a
+# hard-linked one — is never written through.
+proto_install() { # <tmp> <dest>
+  mv -f "$1" "$2"
+}
+
+proto_recorded() { # <dest-name> → recorded hash (empty if none)
+  [ -f "$PROTO_MF" ] || return 0
+  awk -v f="$1" '$2==f && $1 ~ /^[0-9a-f]+$/ && length($1)==64 {print $1; exit}' "$PROTO_MF"
+}
+
+# <name>=<hash> pairs on stdin; written via temp + rename.
+proto_write_manifest() {
+  local tmp line
+  tmp="$(mktemp "$COLLAB/.proto.XXXXXX")" || { echo "error: cannot create a temp file in $COLLAB" >&2; return 1; }
+  {
+    echo "# collab-bus protocol manifest — written by bootstrap.sh; do not edit."
+    echo "# What bootstrap last installed, so a re-run can tell an untouched protocol file"
+    echo "# (safe to update) from one a human edited (kept). See DESIGN-DECISIONS.md §D."
+    echo "version $VERSION"
+    while IFS='=' read -r name hash; do
+      # `if`, not `&&`: a false test as the loop's last command would make the whole
+      # while return 1, and under `set -e` + pipefail that aborts the migration.
+      if [ -n "$hash" ]; then printf '%s  %s\n' "$hash" "$name"; fi
+    done
+  } > "$tmp"
+  mv -f "$tmp" "$PROTO_MF"
+}
+
+# PLAN (migrate): decide the mode and check every destination BEFORE anything — collab/bin
+# included — is replaced, so an unsafe protocol file aborts a migration cleanly.
+plan_protocol() {
+  PROTO_MODE=legacy
+  proto_dest_ok "$PROTO_MF" "collab/$PROTO_MF_NAME" || exit 1
+  if [ -f "$PROTO_MF" ]; then
+    PROTO_MODE=update
+  elif [ "$ADOPT" -eq 1 ]; then
+    PROTO_MODE=adopt
+  fi
+  [ "$PROTO_MODE" = legacy ] && return 0
+  sha256_of /dev/null >/dev/null || exit 1
+  local f
+  for f in $PROTO_GENERIC PROJECT.md; do
+    proto_dest_ok "$COLLAB/$f" "collab/$f" || exit 1
+  done
+  if [ "$PROTO_MODE" = adopt ]; then
+    for f in $PROTO_GENERIC; do
+      [ -e "$COLLAB/$f" ] || continue
+      if [ -e "$COLLAB/$f.pre-$VERSION" ] || [ -L "$COLLAB/$f.pre-$VERSION" ]; then
+        echo "error: backup collab/$f.pre-$VERSION already exists — move it away and re-run --adopt" >&2
+        exit 1
+      fi
+    done
+  fi
+}
+
+# COMMIT (migrate): apply the mode chosen by plan_protocol. <project> fills {{PROJECT}}.
+commit_protocol() { # <project>
+  local project="$1" f tmp new cur rec pairs=""
+  case "$PROTO_MODE" in
+    legacy)
+      if [ -f "$COLLAB/PROTOCOL.md" ]; then
+        echo "kept: collab/PROTOCOL.md was NOT overwritten (it may carry project-specific edits)."
+        echo "      Patch it by hand where it disagrees with $VERSION — the id-allocation,"
+        echo "      transport (both directions go through collab/bin/knock.sh), and version lines."
+      else
+        echo "note: no collab/PROTOCOL.md found — write one from"
+        echo "      $TEMPLATE (substitute {{PROJECT}}, {{PEER}}, {{VERSION}})."
+      fi
+      echo "note: this bus predates the v0.9 protocol layout, so its protocol files are never"
+      echo "      updated automatically. To adopt it: move this project's own rules into"
+      echo "      collab/PROJECT.md (see $TPL_DIR/PROJECT.template.md), then re-run with"
+      echo "      --adopt — the current protocol files are backed up as *.pre-$VERSION first."
+      return 0 ;;
+    adopt)
+      for f in $PROTO_GENERIC; do
+        tmp="$(proto_render "$f" "$project")" || exit 1
+        new="$(sha256_of "$tmp")" || exit 1
+        if [ -e "$COLLAB/$f" ]; then
+          ( set -o noclobber; cat "$COLLAB/$f" > "$COLLAB/$f.pre-$VERSION" ) 2>/dev/null \
+            || { rm -f "$tmp"; echo "error: could not back up collab/$f" >&2; exit 1; }
+          echo "backed up: collab/$f → collab/$f.pre-$VERSION"
+        fi
+        proto_install "$tmp" "$COLLAB/$f"
+        echo "installed: collab/$f ($VERSION)"
+        pairs="$pairs$f=$new"$'\n'
+      done ;;
+    update)
+      for f in $PROTO_GENERIC; do
+        tmp="$(proto_render "$f" "$project")" || exit 1
+        new="$(sha256_of "$tmp")" || exit 1
+        rec="$(proto_recorded "$f")"
+        if [ ! -e "$COLLAB/$f" ]; then
+          proto_install "$tmp" "$COLLAB/$f"; pairs="$pairs$f=$new"$'\n'
+          echo "installed: collab/$f ($VERSION)"
+          continue
+        fi
+        cur="$(sha256_of "$COLLAB/$f")" || exit 1
+        if [ "$cur" = "$new" ]; then
+          rm -f "$tmp"; pairs="$pairs$f=$new"$'\n'
+          echo "up to date: collab/$f"
+        elif [ -n "$rec" ] && [ "$cur" = "$rec" ]; then
+          proto_install "$tmp" "$COLLAB/$f"; pairs="$pairs$f=$new"$'\n'
+          echo "updated: collab/$f → $VERSION"
+        else
+          # Edited by hand (or never recorded): keep it, and keep its OLD recorded hash so
+          # the next re-run still sees it as edited instead of silently overwriting it.
+          rm -f "$tmp"
+          [ -n "$rec" ] && pairs="$pairs$f=$rec"$'\n'
+          echo "KEPT: collab/$f was edited by hand — NOT updated to $VERSION." >&2
+          echo "      Move the project-specific parts into collab/PROJECT.md, then delete or" >&2
+          echo "      restore collab/$f and re-run to receive the new version." >&2
+        fi
+      done ;;
+  esac
+  if [ ! -e "$COLLAB/PROJECT.md" ]; then
+    tmp="$(proto_render PROJECT.md "$project")" || exit 1
+    if ( set -o noclobber; cat "$tmp" > "$COLLAB/PROJECT.md" ) 2>/dev/null; then
+      echo "created: collab/PROJECT.md — this project's own rules go here (never overwritten)"
+    fi
+    rm -f "$tmp"
+  fi
+  printf '%s' "$pairs" | proto_write_manifest
+}
+
 if [ -e "$COLLAB" ] || [ -L "$COLLAB" ]; then
   # --- migrate ---------------------------------------------------------------
   reject_symlink "$COLLAB" "collab"
   [ -d "$COLLAB" ] || { echo "error: $COLLAB exists but is not a directory" >&2; exit 1; }
   plan_bus_json "$(basename "$DIR")"      # validated BEFORE any script is replaced
   plan_registry "$PEER"                   # …and so is the registry
+  plan_protocol                           # …and so are the protocol destinations
   vendor_scripts
   pid="$(commit_bus_json)"
   commit_registry                  # §9: migrate creates participants/ and bindings/ when missing
   echo "bus.json: project_id $pid, schemas read=[$BUS_SCHEMAS_READ] write=$BUS_SCHEMAS_WRITE min_reader=$BUS_PLAN_MIN"
   echo "migrated: re-vendored ${#VENDOR[@]} scripts into collab/bin/ at $VERSION (${VENDOR[*]})"
-  if [ -f "$COLLAB/PROTOCOL.md" ]; then
-    echo "kept: collab/PROTOCOL.md was NOT overwritten (it may carry project-specific edits)."
-    echo "      Patch it by hand where it disagrees with $VERSION — the id-allocation,"
-    echo "      transport (both directions go through collab/bin/knock.sh), and version lines."
-  else
-    echo "note: no collab/PROTOCOL.md found — write one from"
-    echo "      $TEMPLATE (substitute {{PROJECT}}, {{PEER}}, {{VERSION}})."
-  fi
+  # The project name for {{PROJECT}} is bus.json's human-owned project_alias, so a
+  # re-render keeps the title the project was scaffolded (or renamed) with.
+  commit_protocol "$BUS_PLAN_ALIAS"
   exit 0
 fi
 
@@ -403,6 +592,21 @@ content="${content//\{\{VERSION\}\}/$VERSION}"
 if ! ( set -o noclobber; printf '%s\n' "$content" > "$COLLAB/PROTOCOL.md" ) 2>/dev/null; then
   echo "error: $COLLAB/PROTOCOL.md already exists — refusing to overwrite" >&2; exit 1
 fi
+# The rest of the v0.9 protocol set, then the manifest that lets a later re-run update
+# the collab-bus-owned files without touching a hand-edited one.
+sha256_of /dev/null >/dev/null || exit 1
+for _f in PROTOCOL-modes.md DESIGN-DECISIONS.md PROJECT.md; do
+  _tmp="$(proto_render "$_f" "$PROJECT")" || exit 1
+  if ! ( set -o noclobber; cat "$_tmp" > "$COLLAB/$_f" ) 2>/dev/null; then
+    rm -f "$_tmp"; echo "error: $COLLAB/$_f already exists — refusing to overwrite" >&2; exit 1
+  fi
+  rm -f "$_tmp"
+done
+_pairs=""
+for _f in $PROTO_GENERIC; do
+  _pairs="$_pairs$_f=$(sha256_of "$COLLAB/$_f")"$'\n'
+done
+printf '%s' "$_pairs" | proto_write_manifest
 
 
 # Pre-declare the two logical endpoints. `register` is no-replace and idempotent, so this
@@ -412,7 +616,10 @@ commit_registry
 
 cat <<EOF
 scaffolded collab-bus $VERSION in $DIR
-  collab/PROTOCOL.md              the shared contract (Claude Code ⇄ $PEER) — read it first
+  collab/PROTOCOL.md              the shared contract (Claude Code ⇄ $PEER) — read every round
+  collab/PROJECT.md               THIS project's own rules — fill it in; never overwritten
+  collab/PROTOCOL-modes.md        rare modes (wait-cycle, fallback) — read when they apply
+  collab/DESIGN-DECISIONS.md      why the design is what it is — read before changing it
   collab/bus.json                 machine-readable capabilities; project_id $pid
   collab/bin/                     next-id.sh, publish.sh, knock.sh (both sides call these)
   collab/inbox/to/{claude,$PEER}/ message boxes; collab/inbox/archive/ for processed ones

@@ -167,7 +167,8 @@ fake="$(newdir)"
 mkdir -p "$fake/scripts" "$fake/templates" "$fake/.claude-plugin"
 cp "$DIR"/scripts/*.sh "$fake/scripts/"
 mkdir -p "$fake/scripts/lib"; cp "$DIR"/scripts/lib/*.sh "$fake/scripts/lib/"
-cp "$DIR/templates/PROTOCOL.template.md" "$fake/templates/"
+# Every template, not just PROTOCOL: bootstrap refuses to start with any one missing (v0.9).
+cp "$DIR"/templates/*.template.md "$fake/templates/"
 printf '{ "name": "collab-bus" }\n' > "$fake/.claude-plugin/plugin.json"   # no version
 t="$(newdir)"
 out="$(cd "$t" && bash "$fake/scripts/bootstrap.sh" codex 2>&1)"; rc=$?
@@ -966,6 +967,148 @@ out="$("$project_a/collab/bin/preflight.sh" --dir "$project_b" 2>&1)"; rc=$?
   && ! printf '%s\n' "$out" | grep -Fxq "$project_b/collab/bin"; } \
   && ok "a vendored preflight from one project cannot certify another project" \
   || bad "project A's vendored preflight certified project B (rc=$rc out=$out)"
+
+# ============================================================================
+# v0.9 protocol layout: collab-bus owns PROTOCOL/-modes/DESIGN-DECISIONS and may update
+# them; the project owns PROJECT.md. A hand edit is detected via collab/.protocol-vendored
+# and KEPT, never overwritten. (DESIGN-DECISIONS.md §D)
+# ============================================================================
+sha() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1; else sha256sum "$1" | cut -d' ' -f1; fi; }
+mf_hash() { awk -v f="$2" '$2==f{print $1; exit}' "$1/collab/.protocol-vendored"; }
+# Point the manifest's record for <name> at <hash>: simulates "vendored by an older version".
+mf_set() { # <project> <name> <hash>
+  awk -v f="$2" -v h="$3" '$2==f{$0=h"  "f} {print}' "$1/collab/.protocol-vendored" > "$1/mf.tmp" \
+    && mv "$1/mf.tmp" "$1/collab/.protocol-vendored"
+}
+nonbin() { find "$1/collab" -type f -not -path "*/bin/*" | sort | xargs cksum | cksum; }
+
+# --- 40. fresh: all four protocol files + a manifest that matches them ---------
+t="$(newdir)"; (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+missing=""; unrendered=0
+for f in PROTOCOL.md PROJECT.md PROTOCOL-modes.md DESIGN-DECISIONS.md .protocol-vendored; do
+  [ -f "$t/collab/$f" ] || missing="$missing $f"
+done
+for f in PROTOCOL.md PROJECT.md PROTOCOL-modes.md DESIGN-DECISIONS.md; do
+  [ -f "$t/collab/$f" ] && unrendered=$((unrendered + $(grep -c '{{' "$t/collab/$f" || true)))
+done
+agree=1
+for f in PROTOCOL.md PROTOCOL-modes.md DESIGN-DECISIONS.md; do
+  [ "$(mf_hash "$t" "$f")" = "$(sha "$t/collab/$f")" ] || agree=0
+done
+if [ -z "$missing" ] && [ "$unrendered" = 0 ] && [ "$agree" = 1 ] \
+   && ! grep -q 'PROJECT.md' "$t/collab/.protocol-vendored"; then
+  ok "fresh: four protocol files, all rendered, manifest records the three collab-bus-owned ones"
+else
+  bad "fresh v0.9 layout wrong (missing:$missing unrendered=$unrendered agree=$agree)"
+fi
+
+# --- 41. an untouched, older collab-bus file IS updated on re-run -------------
+printf 'OLDER VENDORED MODES\n' > "$t/collab/PROTOCOL-modes.md"
+mf_set "$t" PROTOCOL-modes.md "$(sha "$t/collab/PROTOCOL-modes.md")"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'updated: collab/PROTOCOL-modes.md' \
+   && ! grep -q 'OLDER VENDORED MODES' "$t/collab/PROTOCOL-modes.md" \
+   && [ "$(mf_hash "$t" PROTOCOL-modes.md)" = "$(sha "$t/collab/PROTOCOL-modes.md")" ]; then
+  ok "re-run updates an untouched collab-bus-owned protocol file and re-records its hash"
+else
+  bad "untouched file not updated (rc=$rc out=$out)"
+fi
+
+# --- 42. a hand-edited collab-bus file is KEPT — and stays kept on the next run --
+printf 'HAND EDIT\n' >> "$t/collab/DESIGN-DECISIONS.md"
+edited="$(sha "$t/collab/DESIGN-DECISIONS.md")"; rec_before="$(mf_hash "$t" DESIGN-DECISIONS.md)"
+printf 'stale\n' > "$t/collab/bin/next-id.sh"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+out2="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc2=$?
+if [ "$rc" = 0 ] && [ "$rc2" = 0 ] \
+   && printf '%s' "$out" | grep -q 'KEPT: collab/DESIGN-DECISIONS.md' \
+   && printf '%s' "$out2" | grep -q 'KEPT: collab/DESIGN-DECISIONS.md' \
+   && [ "$(sha "$t/collab/DESIGN-DECISIONS.md")" = "$edited" ] \
+   && [ "$(mf_hash "$t" DESIGN-DECISIONS.md)" = "$rec_before" ] \
+   && cmp -s "$DIR/scripts/next-id.sh" "$t/collab/bin/next-id.sh"; then
+  ok "a hand-edited protocol file is kept on every re-run, and collab/bin/ still refreshes"
+else
+  bad "hand edit not preserved (rc=$rc rc2=$rc2)"
+fi
+
+# --- 43. PROJECT.md is never overwritten, and is created when missing ----------
+printf 'PROJECT RULES\n' > "$t/collab/PROJECT.md"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+kept_project="$(cat "$t/collab/PROJECT.md")"
+rm -f "$t/collab/PROJECT.md"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"
+if [ "$kept_project" = "PROJECT RULES" ] && [ -f "$t/collab/PROJECT.md" ] \
+   && printf '%s' "$out" | grep -q 'created: collab/PROJECT.md'; then
+  ok "PROJECT.md is never overwritten, and a missing one is created"
+else
+  bad "PROJECT.md handling wrong (kept='$kept_project')"
+fi
+
+# --- 44. {{PROJECT}} on re-render comes from bus.json's human-owned alias --------
+t="$(newdir)"; (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+sed 's/"project_alias": "[^"]*"/"project_alias": "Renamed Alias"/' "$t/collab/bus.json" > "$t/bj" && mv "$t/bj" "$t/collab/bus.json"
+printf 'OLD\n' > "$t/collab/PROTOCOL.md"; mf_set "$t" PROTOCOL.md "$(sha "$t/collab/PROTOCOL.md")"
+(cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+if head -1 "$t/collab/PROTOCOL.md" | grep -q 'Renamed Alias'; then
+  ok "a re-rendered PROTOCOL.md keeps the project's own alias, not the directory name"
+else
+  bad "re-render used the wrong project name: $(head -1 "$t/collab/PROTOCOL.md")"
+fi
+
+# --- 45. an older bus (no manifest) is left alone and told how to adopt ---------
+t="$(newdir)"; (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+rm -f "$t/collab/.protocol-vendored" "$t/collab/PROTOCOL-modes.md" "$t/collab/DESIGN-DECISIONS.md" "$t/collab/PROJECT.md"
+printf 'LEGACY PROTOCOL\n' > "$t/collab/PROTOCOL.md"
+before="$(nonbin "$t")"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && [ "$before" = "$(nonbin "$t")" ] && [ ! -e "$t/collab/.protocol-vendored" ] \
+   && printf '%s' "$out" | grep -q -- '--adopt'; then
+  ok "an older bus keeps every protocol byte and is told about --adopt"
+else
+  bad "legacy bus touched or not advised (rc=$rc)"
+fi
+
+# --- 46. --adopt backs the old files up, installs v0.9, keeps PROJECT.md ---------
+printf 'MY PROJECT RULES\n' > "$t/collab/PROJECT.md"
+ver="v$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -1)"
+out="$(cd "$t" && bash "$BOOT" codex --adopt 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && [ "$(cat "$t/collab/PROTOCOL.md.pre-$ver")" = "LEGACY PROTOCOL" ] \
+   && ! grep -q 'LEGACY PROTOCOL' "$t/collab/PROTOCOL.md" \
+   && [ -f "$t/collab/PROTOCOL-modes.md" ] && [ -f "$t/collab/DESIGN-DECISIONS.md" ] \
+   && [ "$(cat "$t/collab/PROJECT.md")" = "MY PROJECT RULES" ] \
+   && [ "$(mf_hash "$t" PROTOCOL.md)" = "$(sha "$t/collab/PROTOCOL.md")" ]; then
+  ok "--adopt: backup first, then the v0.9 set + manifest; PROJECT.md untouched"
+else
+  bad "--adopt wrong (rc=$rc out=$out)"
+fi
+
+# --- 47. --adopt refuses to clobber an existing backup, before ANY change -------
+t="$(newdir)"; (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+rm -f "$t/collab/.protocol-vendored"
+printf 'LEGACY\n' > "$t/collab/PROTOCOL.md"
+printf 'EARLIER BACKUP\n' > "$t/collab/PROTOCOL.md.pre-$ver"
+printf 'stale\n' > "$t/collab/bin/next-id.sh"
+before="$(nonbin "$t")"
+out="$(cd "$t" && bash "$BOOT" codex --adopt 2>&1)"; rc=$?
+if [ "$rc" != 0 ] && [ "$before" = "$(nonbin "$t")" ] \
+   && [ "$(cat "$t/collab/bin/next-id.sh")" = "stale" ]; then
+  ok "--adopt with an existing backup refuses before touching anything, collab/bin included"
+else
+  bad "--adopt clobbered or half-migrated (rc=$rc)"
+fi
+
+# --- 48. a symlinked protocol file aborts the migration before collab/bin moves --
+t="$(newdir)"; (cd "$t" && bash "$BOOT" codex >/dev/null 2>&1)
+outside="$(newdir)"; printf 'outside\n' > "$outside/target.md"
+rm -f "$t/collab/PROTOCOL-modes.md"; ln -s "$outside/target.md" "$t/collab/PROTOCOL-modes.md"
+printf 'stale\n' > "$t/collab/bin/next-id.sh"
+out="$(cd "$t" && bash "$BOOT" codex 2>&1)"; rc=$?
+if [ "$rc" != 0 ] && [ "$(cat "$outside/target.md")" = "outside" ] \
+   && [ "$(cat "$t/collab/bin/next-id.sh")" = "stale" ]; then
+  ok "a symlinked protocol file is refused before collab/bin/ is replaced"
+else
+  bad "symlinked protocol file written through or bin half-migrated (rc=$rc)"
+fi
 
 [ "$fails" -eq 0 ] && { echo "bootstrap: all passed"; exit 0; }
 echo "bootstrap: $fails failed" >&2; exit 1

@@ -75,6 +75,8 @@ run_lint() {
   # Require the files the rules are actually about.
   for f in commands/init.md commands/send.md commands/status.md \
            skills/collab/SKILL.md templates/PROTOCOL.template.md \
+           templates/PROTOCOL-modes.template.md templates/DESIGN-DECISIONS.template.md \
+           templates/PROJECT.template.md \
            scripts/next-id.sh scripts/publish.sh scripts/knock.sh scripts/bootstrap.sh \
            scripts/check-envelope.sh scripts/fm-quote.sh scripts/participant.sh scripts/route.sh \
            scripts/preflight.sh scripts/lib/inventory.sh \
@@ -176,6 +178,15 @@ run_lint() {
         'participant\.sh"? get [^|]*(live|pane_id|tab_id|agent_session)' "${DOCS[@]}"
   require "skill's envelope names to_agent"      'to_agent' "$ROOT/skills/collab/SKILL.md"
   require "template's envelope names to_agent"   'to_agent' "$ROOT/templates/PROTOCOL.template.md"
+  # v0.9: three rules each learned from a real failure. Without them a peer that
+  # replied never woke the sender, a new session needed a hand-run bind, and a reply to
+  # some other thread could be taken for the one being waited on.
+  require "template binds at turn start (ensure)" \
+        'participant\.sh" ensure <自己的 participant id>' "$ROOT/templates/PROTOCOL.template.md"
+  require "template wakes the sender with --submit-only on reply" \
+        'knock\.sh" --submit-only <發訊方_pane_id>' "$ROOT/templates/PROTOCOL.template.md"
+  require "template correlates a reply by reply_to" \
+        '`reply_to` \*\*等於自己送出的那則的 id' "$ROOT/templates/PROTOCOL.template.md"
   return $fail
 }
 

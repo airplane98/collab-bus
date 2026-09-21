@@ -62,8 +62,13 @@ cd <your project>
 That scaffolds `collab/`, vendors the whole of `collab/bin/` (allocator, publisher,
 transport, envelope/registry/routing tools and their libraries), and renders
 `collab/PROTOCOL.md` — everything either agent needs. Re-running it on a project that
-already has a bus **migrates** instead: it refreshes `collab/bin/` and leaves your
-PROTOCOL.md and messages untouched. `/collab-bus:init` calls this same script and then
+already has a bus **migrates** instead: it refreshes `collab/bin/` and never touches
+messages. The protocol is split by owner (v0.9): `collab/PROJECT.md` holds *your*
+project's rules and is never overwritten, while the collab-bus-owned files
+(`PROTOCOL.md`, `PROTOCOL-modes.md`, `DESIGN-DECISIONS.md`) are updated on a re-run —
+unless you edited one by hand, in which case it is kept and reported. A bus created
+before v0.9 keeps its protocol untouched until you opt in with `bootstrap.sh <peer>
+--adopt` (after moving your project's rules into `collab/PROJECT.md`). `/collab-bus:init` calls this same script and then
 adds the parts that need an agent: wiring the peer in herdr, the onboarding message, and
 the handshake.
 

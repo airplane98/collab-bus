@@ -44,9 +44,16 @@ The authoritative per-project contract is **`collab/PROTOCOL.md`** (written by
    have been updated by the migration that vendored the new `collab/bin/`.
 
 **Migrating a stale project** (do this before the first round, with the human's
-OK): re-run the bootstrap, which re-vendors the whole of `collab/bin/` and leaves
-PROTOCOL.md and every message untouched:
+OK): re-run the bootstrap, which re-vendors the whole of `collab/bin/` and never touches
+a message:
 `bash "${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap.sh" <peer>`.
+On a **v0.9-layout** bus it also updates every collab-bus-owned protocol file that nobody
+edited by hand (`PROTOCOL.md`, `PROTOCOL-modes.md`, `DESIGN-DECISIONS.md`); a hand-edited
+one is reported as `KEPT:` and left alone, and `collab/PROJECT.md` — the project's own
+rules — is never overwritten. On an **older** bus the protocol files are left alone and the
+output names `--adopt`: switching layouts is the human's call (move the project's rules
+into `collab/PROJECT.md`, then re-run with `--adopt`; the old files are backed up first).
+The rest of this section applies to an older bus that has not adopted yet.
 Copying two scripts by hand is no longer enough — routing needs `route.sh`,
 `participant.sh` and `lib/`, and a partial `collab/bin/` is worse than an old one
 because the pieces disagree. After it runs, each agent registers and binds its own

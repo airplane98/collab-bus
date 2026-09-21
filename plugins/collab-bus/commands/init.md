@@ -43,11 +43,23 @@ agent, the onboarding message, and the handshake.
      so both sides must call one copy), and rendered `collab/PROTOCOL.md` stamped with
      the plugin version. **Continue with steps 4–6.**
 
-   - **`migrated …` (the project already had a bus)** → it re-vendored `collab/bin/`
-     only, deliberately leaving `PROTOCOL.md` and every message file alone. Now
-     **patch that PROTOCOL.md in place** where it disagrees with this version (id
-     allocation, both-directions-through-`knock.sh` transport, the version line) —
-     never regenerate it wholesale, it usually carries project-specific edits. Then:
+   - **`migrated …` (the project already had a bus)** → it re-vendored `collab/bin/` and
+     left every message file alone. **Read what it printed about the protocol files:**
+     - **v0.9 layout** (`updated:` / `up to date:` / `installed:` lines): the
+       collab-bus-owned files (`PROTOCOL.md`, `PROTOCOL-modes.md`, `DESIGN-DECISIONS.md`)
+       are current; `collab/PROJECT.md` is the project's and was not touched. A **`KEPT:`**
+       line means one of the collab-bus-owned files had been edited by hand, so it was
+       NOT updated: move its project-specific parts into `collab/PROJECT.md`, then delete
+       or restore that file and re-run. Never put a project rule back into PROTOCOL.md.
+     - **older bus** (the output mentions `--adopt`): its protocol files were left alone,
+       exactly as before. Switching to the v0.9 layout is **the human's call**: with their
+       OK, move this project's own rules into `collab/PROJECT.md`, then re-run bootstrap
+       with `--adopt` (the current files are backed up as `*.pre-<version>` first).
+       Until then, patch that PROTOCOL.md in place where it disagrees with this version
+       (id allocation, both-directions-through-`knock.sh` transport, the version line) —
+       never regenerate it wholesale, it usually carries project-specific edits.
+
+     Then:
      if the peer is not currently wired as a herdr agent in your tab, do step 4 to wire
      it — **and then stop. Always skip steps 5–6.** The pair is already onboarded;
      re-sending an onboarding message and re-running the handshake would duplicate work
