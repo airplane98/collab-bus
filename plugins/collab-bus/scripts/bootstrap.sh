@@ -100,8 +100,14 @@ case "$PEER" in
     echo "error: the peer cannot be '$PEER' — that is the other side of the bus" >&2; exit 2 ;;
 esac
 
+# Exists, is readable, is non-empty: an unreadable or empty template must stop us HERE,
+# before anything is touched — rendering one would replace a working protocol with an
+# empty file (seen in review: rc=0, "updated:", 5 KB of rules gone).
 for _t in PROTOCOL PROTOCOL-modes DESIGN-DECISIONS PROJECT; do
-  [ -f "$TPL_DIR/$_t.template.md" ] || { echo "error: template not found: $TPL_DIR/$_t.template.md" >&2; exit 1; }
+  _tf="$TPL_DIR/$_t.template.md"
+  [ -f "$_tf" ] || { echo "error: template not found: $_tf" >&2; exit 1; }
+  [ -r "$_tf" ] || { echo "error: template not readable: $_tf" >&2; exit 1; }
+  [ -s "$_tf" ] || { echo "error: template is empty: $_tf" >&2; exit 1; }
 done
 [ -d "$DIR" ] || { echo "error: target directory not found: $DIR" >&2; exit 1; }
 DIR="$(cd "$DIR" && pwd -P)"
@@ -154,9 +160,11 @@ reject_symlink() { # <path> <label>
 
 STAGE=""
 BUS_TMP=""
+PROTO_TMP=""   # a protocol-file temp between mktemp and its rename (v0.9)
 cleanup() {
   [ -n "$STAGE" ] && rm -rf -- "$STAGE"
   [ -n "$BUS_TMP" ] && rm -f -- "$BUS_TMP"
+  [ -n "$PROTO_TMP" ] && rm -f -- "$PROTO_TMP"
   return 0
 }
 trap cleanup EXIT
@@ -369,8 +377,11 @@ commit_registry() { # create-missing-only; everything was validated by plan_regi
 # and still refreshes collab/bin/ — and keeping rather than overwriting never eats the
 # project's rules. Rationale: DESIGN-DECISIONS.md §D.
 PROTO_MF="$COLLAB/$PROTO_MF_NAME"
-# Same trap as the fresh render below: Bash 5.2+ would expand an unescaped & in a
-# substitution's REPLACEMENT. Turn it off; older bash has no such option.
+# Every render substitutes with bash parameter expansion, not sed: a project name
+# containing / or & would corrupt a sed replacement. Bash 5.2+ then adds its own trap —
+# with patsub_replacement (on by default there) an unescaped & in the REPLACEMENT expands
+# to the matched text, so "a&b" would render as "a{{PROJECT}}b". Turn it off here, before
+# any render in either path; older bash has no such option, hence the tolerated failure.
 shopt -u patsub_replacement 2>/dev/null || true
 
 proto_template() { # <dest-name> → template path
@@ -390,18 +401,52 @@ sha256_of() { # <file> → lowercase hex on stdout
   fi
 }
 
-# Render <dest-name>'s template for <project> into a fresh temp file INSIDE collab/ (same
-# filesystem, so the later mv is a rename) and print its path.
-proto_render() { # <dest-name> <project>
-  local tpl tmp c
+# Staged renders live in these variables between PLAN and COMMIT (bash 3.2: no
+# associative arrays), keyed by proto_key.
+R_PROTOCOL=""; R_MODES=""; R_DD=""; R_PROJECT=""
+proto_key() { # <dest-name> → variable holding its staged render
+  case "$1" in
+    PROTOCOL.md) echo R_PROTOCOL ;; PROTOCOL-modes.md) echo R_MODES ;;
+    DESIGN-DECISIONS.md) echo R_DD ;; PROJECT.md) echo R_PROJECT ;; *) return 1 ;;
+  esac
+}
+
+# Render <dest-name>'s template for <project> into its staging variable. Runs in the PLAN
+# phase, so a failure stops the run before anything on disk changes.
+# Callers use `proto_stage … || exit 1`, which switches `set -e` OFF in here: every step
+# must check its own failure. Letting `cat` fail silently is exactly the review bug — the
+# template renders as an empty string, the empty string is written over a working file.
+proto_stage() { # <dest-name> <project>
+  local tpl var c
   tpl="$(proto_template "$1")" || { echo "error: no template for $1" >&2; return 1; }
-  tmp="$(mktemp "$COLLAB/.proto.XXXXXX")" || { echo "error: cannot create a temp file in $COLLAB" >&2; return 1; }
-  c="$(cat "$tpl")"
+  var="$(proto_key "$1")" || { echo "error: no staging slot for $1" >&2; return 1; }
+  c="$(cat "$tpl")" || { echo "error: cannot read template $tpl" >&2; return 1; }
+  [ -n "$c" ] || { echo "error: template $tpl rendered empty — refusing" >&2; return 1; }
   c="${c//\{\{PROJECT\}\}/$2}"
   c="${c//\{\{PEER\}\}/$PEER}"
   c="${c//\{\{VERSION\}\}/$VERSION}"
-  printf '%s\n' "$c" > "$tmp"
-  printf '%s\n' "$tmp"
+  printf -v "$var" '%s' "$c"
+}
+
+proto_staged() { # <dest-name> → its staged render on stdout
+  local var; var="$(proto_key "$1")" || return 1
+  printf '%s\n' "${!var}"
+}
+
+sha256_stdin() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  else return 1
+  fi
+}
+
+# Write <dest-name>'s staged render to <dest> via a temp in collab/ + rename, so an
+# existing file's inode — including a hard-linked one — is never written through.
+proto_write() { # <dest-name> <dest>
+  PROTO_TMP="$(mktemp "$COLLAB/.proto.XXXXXX")" || { PROTO_TMP=""; echo "error: cannot create a temp file in $COLLAB" >&2; return 1; }
+  proto_staged "$1" > "$PROTO_TMP" || { echo "error: cannot write $PROTO_TMP" >&2; return 1; }
+  mv -f "$PROTO_TMP" "$2" || { echo "error: cannot install $2" >&2; return 1; }
+  PROTO_TMP=""
 }
 
 # A destination must be absent or a regular file; never a symlink (it could redirect the
@@ -409,12 +454,6 @@ proto_render() { # <dest-name> <project>
 proto_dest_ok() { # <path> <label>
   if [ -L "$1" ]; then echo "error: $2 is a symlink — refusing to write through it" >&2; return 1; fi
   if [ -e "$1" ] && [ ! -f "$1" ]; then echo "error: $2 exists and is not a regular file" >&2; return 1; fi
-}
-
-# Replace the directory entry with <tmp> (rename): an existing file's inode — including a
-# hard-linked one — is never written through.
-proto_install() { # <tmp> <dest>
-  mv -f "$1" "$2"
 }
 
 proto_recorded() { # <dest-name> → recorded hash (empty if none)
@@ -442,7 +481,7 @@ proto_write_manifest() {
 
 # PLAN (migrate): decide the mode and check every destination BEFORE anything — collab/bin
 # included — is replaced, so an unsafe protocol file aborts a migration cleanly.
-plan_protocol() {
+plan_protocol() { # <project>
   PROTO_MODE=legacy
   proto_dest_ok "$PROTO_MF" "collab/$PROTO_MF_NAME" || exit 1
   if [ -f "$PROTO_MF" ]; then
@@ -465,11 +504,15 @@ plan_protocol() {
       fi
     done
   fi
+  # Render everything now, while nothing has been touched: a template that cannot be
+  # rendered aborts the run with collab/bin, the protocol files and the manifest intact.
+  for f in $PROTO_GENERIC; do proto_stage "$f" "$1" || exit 1; done
+  if [ ! -e "$COLLAB/PROJECT.md" ]; then proto_stage PROJECT.md "$1" || exit 1; fi
 }
 
-# COMMIT (migrate): apply the mode chosen by plan_protocol. <project> fills {{PROJECT}}.
-commit_protocol() { # <project>
-  local project="$1" f tmp new cur rec pairs=""
+# COMMIT (migrate): apply the mode chosen by plan_protocol, from the renders it staged.
+commit_protocol() {
+  local f new cur rec pairs=""
   case "$PROTO_MODE" in
     legacy)
       if [ -f "$COLLAB/PROTOCOL.md" ]; then
@@ -487,51 +530,46 @@ commit_protocol() { # <project>
       return 0 ;;
     adopt)
       for f in $PROTO_GENERIC; do
-        tmp="$(proto_render "$f" "$project")" || exit 1
-        new="$(sha256_of "$tmp")" || exit 1
+        new="$(proto_staged "$f" | sha256_stdin)" || exit 1
         if [ -e "$COLLAB/$f" ]; then
           ( set -o noclobber; cat "$COLLAB/$f" > "$COLLAB/$f.pre-$VERSION" ) 2>/dev/null \
-            || { rm -f "$tmp"; echo "error: could not back up collab/$f" >&2; exit 1; }
+            || { echo "error: could not back up collab/$f" >&2; exit 1; }
           echo "backed up: collab/$f → collab/$f.pre-$VERSION"
         fi
-        proto_install "$tmp" "$COLLAB/$f"
+        proto_write "$f" "$COLLAB/$f" || exit 1
         echo "installed: collab/$f ($VERSION)"
         pairs="$pairs$f=$new"$'\n'
       done ;;
     update)
       for f in $PROTO_GENERIC; do
-        tmp="$(proto_render "$f" "$project")" || exit 1
-        new="$(sha256_of "$tmp")" || exit 1
+        new="$(proto_staged "$f" | sha256_stdin)" || exit 1
         rec="$(proto_recorded "$f")"
         if [ ! -e "$COLLAB/$f" ]; then
-          proto_install "$tmp" "$COLLAB/$f"; pairs="$pairs$f=$new"$'\n'
+          proto_write "$f" "$COLLAB/$f" || exit 1; pairs="$pairs$f=$new"$'\n'
           echo "installed: collab/$f ($VERSION)"
           continue
         fi
         cur="$(sha256_of "$COLLAB/$f")" || exit 1
         if [ "$cur" = "$new" ]; then
-          rm -f "$tmp"; pairs="$pairs$f=$new"$'\n'
+          pairs="$pairs$f=$new"$'\n'
           echo "up to date: collab/$f"
         elif [ -n "$rec" ] && [ "$cur" = "$rec" ]; then
-          proto_install "$tmp" "$COLLAB/$f"; pairs="$pairs$f=$new"$'\n'
+          proto_write "$f" "$COLLAB/$f" || exit 1; pairs="$pairs$f=$new"$'\n'
           echo "updated: collab/$f → $VERSION"
         else
           # Edited by hand (or never recorded): keep it, and keep its OLD recorded hash so
           # the next re-run still sees it as edited instead of silently overwriting it.
-          rm -f "$tmp"
-          [ -n "$rec" ] && pairs="$pairs$f=$rec"$'\n'
+          if [ -n "$rec" ]; then pairs="$pairs$f=$rec"$'\n'; fi
           echo "KEPT: collab/$f was edited by hand — NOT updated to $VERSION." >&2
           echo "      Move the project-specific parts into collab/PROJECT.md, then delete or" >&2
           echo "      restore collab/$f and re-run to receive the new version." >&2
         fi
       done ;;
   esac
-  if [ ! -e "$COLLAB/PROJECT.md" ]; then
-    tmp="$(proto_render PROJECT.md "$project")" || exit 1
-    if ( set -o noclobber; cat "$tmp" > "$COLLAB/PROJECT.md" ) 2>/dev/null; then
+  if [ ! -e "$COLLAB/PROJECT.md" ] && [ -n "$R_PROJECT" ]; then
+    if ( set -o noclobber; proto_staged PROJECT.md > "$COLLAB/PROJECT.md" ) 2>/dev/null; then
       echo "created: collab/PROJECT.md — this project's own rules go here (never overwritten)"
     fi
-    rm -f "$tmp"
   fi
   printf '%s' "$pairs" | proto_write_manifest
 }
@@ -542,7 +580,7 @@ if [ -e "$COLLAB" ] || [ -L "$COLLAB" ]; then
   [ -d "$COLLAB" ] || { echo "error: $COLLAB exists but is not a directory" >&2; exit 1; }
   plan_bus_json "$(basename "$DIR")"      # validated BEFORE any script is replaced
   plan_registry "$PEER"                   # …and so is the registry
-  plan_protocol                           # …and so are the protocol destinations
+  plan_protocol "$BUS_PLAN_ALIAS"         # …and so are the protocol files (all rendered)
   vendor_scripts
   pid="$(commit_bus_json)"
   commit_registry                  # §9: migrate creates participants/ and bindings/ when missing
@@ -550,7 +588,7 @@ if [ -e "$COLLAB" ] || [ -L "$COLLAB" ]; then
   echo "migrated: re-vendored ${#VENDOR[@]} scripts into collab/bin/ at $VERSION (${VENDOR[*]})"
   # The project name for {{PROJECT}} is bus.json's human-owned project_alias, so a
   # re-render keeps the title the project was scaffolded (or renamed) with.
-  commit_protocol "$BUS_PLAN_ALIAS"
+  commit_protocol
   exit 0
 fi
 
@@ -560,6 +598,11 @@ if command -v git >/dev/null 2>&1 && top="$(git -C "$DIR" rev-parse --show-tople
 else
   PROJECT="$(basename "$DIR")"
 fi
+
+# Render all four protocol files before anything is created: a template that cannot be
+# rendered then leaves no half-scaffolded collab/ behind (which a re-run would mistake for
+# a pre-v0.9 bus).
+for _f in $PROTO_GENERIC PROJECT.md; do proto_stage "$_f" "$PROJECT" || exit 1; done
 
 # participants/ and bindings/ exist from the start: a logical endpoint does not need a
 # live agent, so bootstrap can pre-declare the pair even before either side is wired.
@@ -579,32 +622,18 @@ plan_bus_json "$PROJECT"
 vendor_scripts
 pid="$(commit_bus_json)"
 
-# Substitute with bash parameter expansion, not sed: a project name containing / or &
-# would corrupt a sed replacement. Bash 5.2+ then adds its own trap — with
-# patsub_replacement (on by default there) an unescaped & in the REPLACEMENT expands to
-# the matched text, so "a&b" would render as "a{{PROJECT}}b". Turn it off; older bash
-# has no such option, hence the tolerated failure.
-shopt -u patsub_replacement 2>/dev/null || true
-content="$(cat "$TEMPLATE")"
-content="${content//\{\{PROJECT\}\}/$PROJECT}"
-content="${content//\{\{PEER\}\}/$PEER}"
-content="${content//\{\{VERSION\}\}/$VERSION}"
-if ! ( set -o noclobber; printf '%s\n' "$content" > "$COLLAB/PROTOCOL.md" ) 2>/dev/null; then
-  echo "error: $COLLAB/PROTOCOL.md already exists — refusing to overwrite" >&2; exit 1
-fi
-# The rest of the v0.9 protocol set, then the manifest that lets a later re-run update
-# the collab-bus-owned files without touching a hand-edited one.
-sha256_of /dev/null >/dev/null || exit 1
-for _f in PROTOCOL-modes.md DESIGN-DECISIONS.md PROJECT.md; do
-  _tmp="$(proto_render "$_f" "$PROJECT")" || exit 1
-  if ! ( set -o noclobber; cat "$_tmp" > "$COLLAB/$_f" ) 2>/dev/null; then
-    rm -f "$_tmp"; echo "error: $COLLAB/$_f already exists — refusing to overwrite" >&2; exit 1
+# Write the renders staged above; noclobber, since a fresh scaffold never replaces anything.
+for _f in $PROTO_GENERIC PROJECT.md; do
+  if ! ( set -o noclobber; proto_staged "$_f" > "$COLLAB/$_f" ) 2>/dev/null; then
+    echo "error: $COLLAB/$_f already exists — refusing to overwrite" >&2; exit 1
   fi
-  rm -f "$_tmp"
 done
+# The manifest lets a later re-run update the collab-bus-owned files without touching a
+# hand-edited one.
 _pairs=""
 for _f in $PROTO_GENERIC; do
-  _pairs="$_pairs$_f=$(sha256_of "$COLLAB/$_f")"$'\n'
+  _h="$(sha256_of "$COLLAB/$_f")" || exit 1
+  _pairs="$_pairs$_f=$_h"$'\n'
 done
 printf '%s' "$_pairs" | proto_write_manifest
 

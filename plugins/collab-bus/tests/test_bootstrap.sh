@@ -1110,5 +1110,83 @@ else
   bad "symlinked protocol file written through or bin half-migrated (rc=$rc)"
 fi
 
+# ============================================================================
+# A template that cannot be rendered must stop the run with NOTHING changed. Found in
+# review: `cat` failing inside a function called as `x=$(f) || exit 1` (where `set -e`
+# is off) rendered an empty string, which replaced a working PROTOCOL-modes.md — rc=0,
+# "updated:", its hash recorded. Every case below checks the protocol files, the manifest
+# AND collab/bin (a partial migration is its own failure).
+# ============================================================================
+mkfake() { # → a copy of the plugin whose templates a case may break
+  local f; f="$(newdir)"
+  mkdir -p "$f/scripts/lib" "$f/templates" "$f/.claude-plugin"
+  cp "$DIR"/scripts/*.sh "$f/scripts/"; cp "$DIR"/scripts/lib/*.sh "$f/scripts/lib/"
+  cp "$DIR"/templates/*.template.md "$f/templates/"; cp "$MANIFEST" "$f/.claude-plugin/"
+  printf '%s\n' "$f"
+}
+# A v0.9 bus built by <fake>, with a stale bin so a partial migration would show.
+mkbus() { # <fake>
+  local b; b="$(newdir)"
+  (cd "$b" && bash "$1/scripts/bootstrap.sh" codex >/dev/null 2>&1)
+  printf 'stale\n' > "$b/collab/bin/next-id.sh"
+  printf '%s\n' "$b"
+}
+untouched() { # <bus> <before-cksum> → 0 if no protocol/manifest/bin change
+  [ "$(nonbin "$1")" = "$2" ] && [ "$(cat "$1/collab/bin/next-id.sh")" = "stale" ]
+}
+
+# --- 49. `cat` fails mid-render (readable at the precheck): nothing changes ----
+fake="$(mkfake)"; t="$(mkbus "$fake")"; before="$(nonbin "$t")"
+stub="$(newdir)"
+cat > "$stub/cat" <<'STUB'
+#!/bin/bash
+for a in "$@"; do case "$a" in *PROTOCOL-modes.template.md) echo "cat: $a: Permission denied" >&2; exit 1 ;; esac; done
+exec /bin/cat "$@"
+STUB
+chmod +x "$stub/cat"
+out="$(cd "$t" && PATH="$stub:$PATH" bash "$fake/scripts/bootstrap.sh" codex 2>&1)"; rc=$?
+if [ "$rc" != 0 ] && untouched "$t" "$before" && ! printf '%s' "$out" | grep -q 'updated:'; then
+  ok "a template read that fails mid-render aborts with protocol, manifest and bin unchanged"
+else
+  bad "failed render was not fatal or changed files (rc=$rc out=$out)"
+fi
+
+# --- 50. an empty template: refused, nothing changes --------------------------
+fake="$(mkfake)"; t="$(mkbus "$fake")"; before="$(nonbin "$t")"
+: > "$fake/templates/DESIGN-DECISIONS.template.md"
+out="$(cd "$t" && bash "$fake/scripts/bootstrap.sh" codex 2>&1)"; rc=$?
+if [ "$rc" != 0 ] && untouched "$t" "$before" && printf '%s' "$out" | grep -q 'empty'; then
+  ok "an empty template is refused before anything changes"
+else
+  bad "empty template not refused (rc=$rc out=$out)"
+fi
+
+# --- 51. an unreadable template (the reviewer's reproduction): nothing changes --
+if [ "$(id -u)" = 0 ]; then
+  ok "unreadable-template case skipped as root (chmod 000 does not stop root; case 49 covers it)"
+else
+  fake="$(mkfake)"; t="$(mkbus "$fake")"; before="$(nonbin "$t")"
+  chmod 000 "$fake/templates/PROTOCOL-modes.template.md"
+  out="$(cd "$t" && bash "$fake/scripts/bootstrap.sh" codex 2>&1)"; rc=$?
+  chmod 644 "$fake/templates/PROTOCOL-modes.template.md"
+  if [ "$rc" != 0 ] && untouched "$t" "$before" \
+     && [ "$(wc -c < "$t/collab/PROTOCOL-modes.md")" -gt 1 ]; then
+    ok "an unreadable template is refused; the existing PROTOCOL-modes.md keeps its content"
+  else
+    bad "unreadable template emptied or changed files (rc=$rc out=$out)"
+  fi
+fi
+
+# --- 52. fresh scaffold with an unrenderable template creates nothing ---------
+fake="$(mkfake)"; : > "$fake/templates/PROJECT.template.md"
+t="$(newdir)"
+out="$(cd "$t" && bash "$fake/scripts/bootstrap.sh" codex 2>&1)"; rc=$?
+out2="$(cd "$t" && PATH="$stub:$PATH" bash "$(mkfake)/scripts/bootstrap.sh" codex 2>&1)"; rc2=$?
+if [ "$rc" != 0 ] && [ "$rc2" != 0 ] && [ ! -e "$t/collab" ]; then
+  ok "fresh: an empty or unreadable template leaves no half-scaffolded collab/"
+else
+  bad "fresh scaffold left a partial tree (rc=$rc rc2=$rc2)"
+fi
+
 [ "$fails" -eq 0 ] && { echo "bootstrap: all passed"; exit 0; }
 echo "bootstrap: $fails failed" >&2; exit 1

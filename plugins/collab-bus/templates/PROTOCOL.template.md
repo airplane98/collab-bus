@@ -119,9 +119,13 @@ finder-fixes 是 opt-in,且**下列全部成立才允許**:
   finder-fixes;author-fixes 是預設,不需這道手續。finder 啟用後,某則 mode 缺失/矛盾或
   context 遺失 → **停下重談**,不各自默默退回 author(那會偷改誰在寫);每則
   action/handoff/verify reply 都重述 mode、引用同一份約定,只在 handoff 邊界切換。
-- **一次一個 writer**:交手出去的 checkout,在對方手上時不要動它;停掉它上面的背景寫入程序;
-  nudge timeout 或對方 idle **不代表**筆回來了。**筆只在終局回覆 publish 的那一刻回來**
-  ——中途的 `question`／`ack`／進度 `reply` 都不算。
+- **一次一個 writer**:交手出去的 checkout,在對方手上時不要動它;停掉它上面的背景寫入程序。
+  **筆怎麼移動**——兩件事要分開看:
+  - **checkout 的筆**只在**明確的 handoff**(`type: fix-applied`)publish 時移交給對方。
+    handoff **不關閉原 request**:對方驗證時發現新缺陷,可以依 finder-fixes 接著修再交回。
+  - `question`／`ack`／進度 `reply`、nudge timeout、對方 idle **都不移交筆**。
+  - **原 request 的結束**(由它的 recipient 在所有 findings 都有結論後送出終局回覆)與
+    **checkout 所有權的移交**是兩件事——不要為了驗證一個已修好的項目而提早結束原 request。
 - **每次交手前、離開前都先 commit**:handoff 用 `type: fix-applied`、commit 放 `refs`,
   講明要驗什麼;接收方動手前先確認在對的 branch/commit 且 tree 乾淨。**不符就停下回報**
   ——絕不覆蓋 checkout 狀態、不把別人的 edit 併進來、不 `reset --hard` / `clean` /
