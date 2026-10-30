@@ -166,7 +166,7 @@ fi
 fake="$(newdir)"
 mkdir -p "$fake/scripts" "$fake/templates" "$fake/.claude-plugin"
 cp "$DIR"/scripts/*.sh "$fake/scripts/"
-mkdir -p "$fake/scripts/lib"; cp "$DIR"/scripts/lib/*.sh "$fake/scripts/lib/"
+mkdir -p "$fake/scripts/lib"; cp "$DIR"/scripts/lib/*.sh "$DIR"/scripts/lib/*.py "$fake/scripts/lib/"
 # Every template, not just PROTOCOL: bootstrap refuses to start with any one missing (v0.9).
 cp "$DIR"/templates/*.template.md "$fake/templates/"
 printf '{ "name": "collab-bus" }\n' > "$fake/.claude-plugin/plugin.json"   # no version
@@ -1120,7 +1120,7 @@ fi
 mkfake() { # → a copy of the plugin whose templates a case may break
   local f; f="$(newdir)"
   mkdir -p "$f/scripts/lib" "$f/templates" "$f/.claude-plugin"
-  cp "$DIR"/scripts/*.sh "$f/scripts/"; cp "$DIR"/scripts/lib/*.sh "$f/scripts/lib/"
+  cp "$DIR"/scripts/*.sh "$f/scripts/"; cp "$DIR"/scripts/lib/*.sh "$DIR"/scripts/lib/*.py "$f/scripts/lib/"
   cp "$DIR"/templates/*.template.md "$f/templates/"; cp "$MANIFEST" "$f/.claude-plugin/"
   printf '%s\n' "$f"
 }

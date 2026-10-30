@@ -2,6 +2,9 @@
 description: Compose and send one collab-bus message to the peer over herdr, then read the reply
 ---
 
+> **Herdr App:** when `$HC_TERMINAL_ID` is set, run every `herdr …` below as
+> `"$BIN/herdr.sh" …` — a bare `herdr` there answers from the other (TUI) server.
+
 Send one message to the peer over the collab bus. Args: **`$1` = the recipient's
 participant id** (e.g. `codex-primary`), the rest (`$ARGUMENTS` after it) = subject /
 topic. It is an id, never a kind: with two agents of one kind in a tab a kind cannot

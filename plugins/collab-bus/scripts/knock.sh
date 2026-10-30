@@ -71,8 +71,10 @@ peer="${1:-}"
 nudge="${2:-Act on the message addressed to you under collab/inbox/ whose \`pair\` matches your own herdr tab_id — ignore messages belonging to other pairs. Follow collab/PROTOCOL.md; write your reply file and archive the message when your turn is done. (The caller did not name a file; ask which one if it is ambiguous.)}"
 
 [[ -z "$peer" ]] && { echo "usage: knock.sh [--submit-only] <peer|pane_id> [nudge]" >&2; exit 2; }
-command -v herdr >/dev/null 2>&1 || {
-  echo "herdr not found. collab-bus >=0.2 runs on herdr (https://herdr.dev)." >&2
+# Every herdr call goes through herdr.sh, which serves either herdr (TUI) or Herdr App.
+HERDR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/herdr.sh"
+"$HERDR" --backend >/dev/null 2>&1 || {
+  echo "herdr not found. collab-bus >=0.2 runs on herdr (https://herdr.dev) or Herdr App (herdr-core)." >&2
   exit 1
 }
 
@@ -84,7 +86,7 @@ command -v herdr >/dev/null 2>&1 || {
 # (the script uses `set -uo pipefail`, not `-e`, so this only affects this capture).
 target="$peer"
 if command -v python3 >/dev/null 2>&1; then
-  resolved="$(herdr agent list 2>/dev/null | python3 -c '
+  resolved="$("$HERDR" agent list 2>/dev/null | python3 -c '
 import json, sys
 peer = sys.argv[1]
 try:
@@ -109,7 +111,7 @@ if [ "$submit_only" -eq 1 ]; then
   # The `submitted, not settled` marker prints ONLY on an accepted submission —
   # a rejected one keeps herdr's nonzero code and no false "submitted".
   echo "knock → $peer (target=$target): submit-only (no pre-settle, no --wait)" >&2
-  herdr agent prompt "$target" "$nudge"; rc=$?
+  "$HERDR" agent prompt "$target" "$nudge"; rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "submitted, not settled — herdr accepted the submission; the reply is not settled and lands in the inbox, so reconcile there rather than waiting here." >&2
   fi
@@ -126,7 +128,7 @@ wait_ms="${COLLAB_WAIT_MS:-600000}"
 # as the prompt step's errors — and stops: prompting an unsettled peer would
 # reintroduce the race this guard exists to close.
 echo "knock → $peer (target=$target): pre-settle any in-flight turn (timeout ${wait_ms}ms)" >&2
-pre="$(herdr agent wait "$target" --timeout "$wait_ms")"; rc=$?
+pre="$("$HERDR" agent wait "$target" --timeout "$wait_ms")"; rc=$?
 if [ "$rc" -ne 0 ]; then
   exit "$rc"
 fi
@@ -164,4 +166,4 @@ fi
 echo "knock → $peer (target=$target): submit + wait for turn to settle (idle/done/blocked, timeout ${wait_ms}ms)" >&2
 # No --until: `prompt --wait` defaults to idle/done/blocked = "turn settled".
 # The JSON result reports which state settled; the caller decides what to do next.
-exec herdr agent prompt "$target" "$nudge" --wait --timeout "$wait_ms"
+exec "$HERDR" agent prompt "$target" "$nudge" --wait --timeout "$wait_ms"

@@ -53,7 +53,7 @@ _r_err() { echo "route: $1" >&2; }
 MY_AGENT=""; MY_KIND=""; MY_TAB=""
 
 _r_live_tab() {
-  command -v herdr >/dev/null 2>&1 || return 1
+  "$SELF/herdr.sh" --backend >/dev/null 2>&1 || return 1
   local out t
   # `--current` for the reason participant.sh documents: the calling pane, never whatever
   # pane a UI client happens to have focused. The bare form is the herdr 0.8 fallback and
@@ -61,10 +61,10 @@ _r_live_tab() {
   # not be retried bare, because that retry can succeed with the focused pane's tab and
   # this function's answer decides which legacy messages we claim.
   local rc=0
-  out="$(herdr pane current --current 2>/dev/null)" || rc=$?
+  out="$("$SELF/herdr.sh" pane current --current 2>/dev/null)" || rc=$?
   if [ "$rc" = 2 ]; then
     rc=0
-    out="$(herdr pane current 2>/dev/null)" || rc=$?
+    out="$("$SELF/herdr.sh" pane current 2>/dev/null)" || rc=$?
   fi
   [ "$rc" = 0 ] || return 1
   t="$(printf '%s' "$out" | sed -n 's/.*"tab_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"

@@ -67,6 +67,14 @@ fresh template would silently discard.
 
 ## Prerequisites (verify before a round)
 
+- **Two herdr products, one entry point.** herdr (the TUI multiplexer, panes like
+  `w1:p2`) and Herdr App (herdr-core / `hc`, terminals like `t7`) are separate servers
+  that cannot see each other. Inside a Herdr App terminal (`$HC_TERMINAL_ID` is set)
+  a bare `herdr` still answers — from the OTHER server — so `herdr pane current`
+  reports someone else's focused pane. Every `herdr …` command below therefore means
+  `"$BIN/herdr.sh" …` (or `"$COLLAB_BUS_TRUSTED_SCRIPTS/herdr.sh"` before `$BIN` is
+  known): it picks the backend from the environment and prints herdr's JSON either way.
+  The scripts (`knock.sh`, `participant.sh`, `route.sh`) already go through it.
 - **herdr is running**: `herdr status` shows `server: status: running`.
   collab-bus ≥0.4 needs **herdr ≥ 0.8**: `knock.sh` pre-settles with `agent wait`,
   and self-identification uses `herdr pane current` (both absent in older herdr).

@@ -35,6 +35,9 @@ esac
 EOF
 chmod +x "$STUB/herdr"
 export PATH="$STUB:$PATH"
+# These tests stub the herdr CLI; pin the herdr backend so running them inside a
+# Herdr App terminal (HC_TERMINAL_ID set) does not route to the real herdr-core.
+export COLLAB_HERDR_BACKEND=herdr
 
 # One project, bootstrapped exactly as a user would get it, then both participants bound.
 newproj() {

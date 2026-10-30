@@ -317,12 +317,17 @@ pair: w3:t3
 
 **規則：peer = 與自己同一個 `tab_id` 的對方 agent**（不是 pane 編號、也不是名稱）。
 
+**herdr 指令一律經 `"$BIN/herdr.sh"`，不要直接打 `herdr`。** herdr（TUI）和 Herdr App
+（herdr-core／`hc`）是兩個互相看不見的 server；在 Herdr App 的 terminal 裡直接打
+`herdr`，回答的是另一個 server——`pane current` 會回別人聚焦的 pane。`herdr.sh` 依
+`$HC_TERMINAL_ID` 自動選對的那個，輸出格式相同（Herdr App 的 pane_id 形如 `t7`）。
+
 ```bash
 # 1. 我是誰：--current 明確指向「呼叫者」（省略時 herdr 可能改用 UI 聚焦的那個 pane）
-herdr pane current --current | jq -r '.result.pane | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
+"$BIN/herdr.sh" pane current --current | jq -r '.result.pane | "ME   pane=\(.pane_id) tab=\(.tab_id)"'
 
 # 2. 我的 peer：tab_id 與上一步相同、agent 為對方的那一筆
-herdr agent list | jq -r --arg tab "<上一步的 tab>" '.result.agents[]
+"$BIN/herdr.sh" agent list | jq -r --arg tab "<上一步的 tab>" '.result.agents[]
   | select(.agent=="{{PEER}}" and .tab_id==$tab)
   | "PEER pane=\(.pane_id) status=\(.agent_status)"'
 ```
@@ -339,7 +344,7 @@ herdr agent list | jq -r --arg tab "<上一步的 tab>" '.result.agents[]
 - **雙方敲門都用 `"$BIN/knock.sh" <對方_pane_id> "..."`**（`knock.sh {{PEER}}` 這種名稱解析
   在有兩個以上同類 agent 時會拒絕，那是警訊不是故障）。**不要自己裸跑
   `herdr agent prompt ... --wait`**——那等於重新引入 knock.sh 專門擋掉的競態。
-- 查狀態：`herdr agent get <pane_id>`／讀輸出：`herdr agent read <pane_id>`
+- 查狀態：`"$BIN/herdr.sh" agent get <pane_id>`／讀輸出：`"$BIN/herdr.sh" agent read <pane_id>`
 - **一律走 `prompt`（經 knock.sh）不用 `send-keys`**。
 
 **誤敲別組時**：立刻停止該輪、不要重試，並告知人類敲到了哪個 pane。

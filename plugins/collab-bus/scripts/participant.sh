@@ -347,7 +347,7 @@ binding_read() { # <file>
 # Resolved fresh every time from herdr, never remembered. Tests replace herdr on PATH.
 LIVE_PANE=""; LIVE_TAB=""; LIVE_SESSION=""
 resolve_live() {
-  command -v herdr >/dev/null 2>&1 || { _p_err "herdr not found — cannot resolve this process's coordinates"; return 1; }
+  "$SELF/herdr.sh" --backend >/dev/null 2>&1 || { _p_err "herdr not found — cannot resolve this process's coordinates"; return 1; }
   local out
   # `--current` targets the CALLING pane explicitly. herdr 0.9's own skill warns that
   # omitting a target "may use the UI-focused pane, which can belong to the user or
@@ -363,10 +363,10 @@ resolve_live() {
   # `--current || bare` would quietly reintroduce the risk it was added to remove. Only
   # "this binary has no such flag" earns the older form.
   local _pc_rc=0
-  out="$(herdr pane current --current 2>/dev/null)" || _pc_rc=$?
+  out="$("$SELF/herdr.sh" pane current --current 2>/dev/null)" || _pc_rc=$?
   if [ "$_pc_rc" = 2 ]; then
     _pc_rc=0
-    out="$(herdr pane current 2>/dev/null)" || _pc_rc=$?
+    out="$("$SELF/herdr.sh" pane current 2>/dev/null)" || _pc_rc=$?
   fi
   [ "$_pc_rc" = 0 ] \
     || { _p_err "herdr pane current failed — are we inside a herdr pane?"; return 1; }
@@ -399,8 +399,8 @@ resolve_live() {
 session_liveness() {
   local out parsed=""
   [ -n "$1" ] || { printf 'unknown'; return 0; }
-  command -v herdr >/dev/null 2>&1 || { printf 'unknown'; return 0; }
-  out="$(herdr agent list 2>/dev/null)" || { printf 'unknown'; return 0; }
+  "$SELF/herdr.sh" --backend >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  out="$("$SELF/herdr.sh" agent list 2>/dev/null)" || { printf 'unknown'; return 0; }
 
   # A REAL PARSER OR NOTHING. There is no dependency-free shortcut here: the previous
   # fallback counted `[` and `]` without knowing whether it was inside a JSON string, so

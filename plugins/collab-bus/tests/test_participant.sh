@@ -33,6 +33,9 @@ esac
 EOF
 chmod +x "$STUB/herdr"
 export PATH="$STUB:$PATH"
+# These tests stub the herdr CLI; pin the herdr backend so running them inside a
+# Herdr App terminal (HC_TERMINAL_ID set) does not route to the real herdr-core.
+export COLLAB_HERDR_BACKEND=herdr
 
 newproj() {                 # a project with collab/ and a fresh herdr state
   local t; t="$(mktemp -d "$ROOT/proj.XXXXXX")"; mkdir -p "$t/collab" "$t/state"
@@ -835,7 +838,7 @@ sed -e 's/"agent_session": "sess-old"/"agent_session": "sess-new"/' -e 's/"pane_
     "$t/old.json" > "$t/new.json"
 printf 'sess-old\n' > "$t/state/live"          # only the OLD holder is live
 wrap="$ROOT/wrap.$$"; mkdir -p "$wrap"
-cp "$P" "$wrap/participant.real.sh"; cp -R "$DIR/scripts/lib" "$wrap/lib"
+cp "$P" "$wrap/participant.real.sh"; cp "$DIR/scripts/herdr.sh" "$wrap/"; cp -R "$DIR/scripts/lib" "$wrap/lib"
 cat > "$wrap/participant.sh" <<'EOF'
 #!/usr/bin/env bash
 d="$(cd "$(dirname "$0")" && pwd -P)"

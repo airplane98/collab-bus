@@ -48,6 +48,9 @@ exit 0
 EOF
 chmod +x "$tmp/bin/herdr"
 export PATH="$tmp/bin:$PATH"
+# These tests stub the herdr CLI; pin the herdr backend so running them inside a
+# Herdr App terminal (HC_TERMINAL_ID set) does not route to the real herdr-core.
+export COLLAB_HERDR_BACKEND=herdr
 export HERDR_STUB_LOG="$tmp/calls.log"
 
 run(){ : >"$HERDR_STUB_LOG"; HERDR_STUB_MODE="$1" bash "$KNOCK" w9:p9 "test nudge" >"$tmp/out" 2>"$tmp/err"; echo $?; }

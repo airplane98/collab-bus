@@ -14,6 +14,10 @@ agent, the onboarding message, and the handshake.
    missing, tell the user to install it (https://herdr.dev) — collab-bus ≥0.2 needs
    it, and collab-bus ≥0.4 needs **herdr ≥ 0.8** (`agent wait`, `pane current`,
    `agent start`); `herdr --version` if unsure.
+   **In Herdr App** (`$HC_TERMINAL_ID` is set) use
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/herdr.sh"` in place of `herdr` for every command in
+   this file — a bare `herdr` there talks to the other (TUI) server and identifies the
+   wrong pane. `herdr.sh status` reports the Herdr App server.
 
 2. **Resolve names.**
    - `PEER` = `$1` or `codex`.
@@ -90,6 +94,15 @@ agent, the onboarding message, and the handshake.
      same-tab pairing) and run the peer CLI there in this project dir, e.g.
      `cd <project> && codex`; then re-run `herdr agent list` and take the new
      `pane_id`.
+   - **In Herdr App** there is no `pane split` / `agent start`; start the peer as your
+     child terminal, which puts it in your tab:
+     ```bash
+     herdr-core run --bg --name <NAME> --cwd "$PWD" <KIND>   # note "address" (t7) = pane_id
+     herdr-core wait <NAME>        # ready for input; a trust dialog shows as blocked:
+                                   # `herdr-core read <NAME>`, then `herdr-core keys <NAME> enter`
+     ```
+     A peer the human opens in a new pane of the same Herdr App tab works too; find it
+     with `herdr.sh agent list`.
    - For a manually-wired peer, optional but recommended for a stable target:
      `herdr agent rename <pane_id> <NAME>` (the pair-scoped name — renaming two
      pairs' peers to the same bare `<PEER>` would defeat the point).

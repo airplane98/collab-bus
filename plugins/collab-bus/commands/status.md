@@ -2,6 +2,9 @@
 description: Show the collab-bus inbox state and the peer agent's herdr state/output
 ---
 
+> **Herdr App:** when `$HC_TERMINAL_ID` is set, run every `herdr …` below as
+> `"$BIN/herdr.sh" …` — a bare `herdr` there answers from the other (TUI) server.
+
 Report the current collab-bus state. Peer from `$1` (default `codex`).
 
 1. **Vet the project runtime before reading through it.** Run from the project root:

@@ -10,5 +10,5 @@
 #
 # Adding a script here is all that is needed for bootstrap to vendor it and preflight to
 # demand it.
-COLLAB_BINS="next-id.sh publish.sh knock.sh check-envelope.sh fm-quote.sh participant.sh route.sh preflight.sh"
-COLLAB_LIBS="lib/envelope.sh lib/manifest.sh lib/inventory.sh"
+COLLAB_BINS="next-id.sh publish.sh knock.sh herdr.sh check-envelope.sh fm-quote.sh participant.sh route.sh preflight.sh"
+COLLAB_LIBS="lib/envelope.sh lib/manifest.sh lib/inventory.sh lib/herdr_hc.py"
