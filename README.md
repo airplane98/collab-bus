@@ -37,6 +37,12 @@ herdr is agent-aware: it knows each agent's semantic state (`idle`/`working`/`bl
 > collab-bus **v0.1** used raw tmux `send-keys` + file polling (still in git history).
 > **v0.2+ requires herdr; v0.4+ requires herdr ≥ 0.8** (`agent wait`, `pane current`,
 > `agent start`).
+> **v0.9.1+ also runs in Herdr App** (herdr-core / `hc`). The two herdr products are
+> separate servers; inside a Herdr App terminal a bare `herdr` answers from the TUI
+> server and reports someone else's pane. Every script therefore calls
+> `scripts/herdr.sh`, which picks the backend from `$HC_TERMINAL_ID` and speaks herdr's
+> JSON either way (`COLLAB_HERDR_BACKEND=hc|herdr` forces one). Re-run `bootstrap.sh`
+> in existing projects to vendor it.
 
 ## Install (any machine)
 
@@ -160,6 +166,7 @@ plugins/collab-bus/
 ├── scripts/next-id.sh              # allocate a message: mint a ULID, create a .md.part draft
 ├── scripts/publish.sh              # atomic publish: rename the draft to the final .md
 ├── scripts/knock.sh                # herdr transport: agent prompt --wait (+ --submit-only)
+├── scripts/herdr.sh                # herdr frontend: herdr (TUI) or Herdr App via lib/herdr_hc.py
 ├── scripts/participant.sh          # identity vs live binding: register/bind/ensure/snapshot
 ├── scripts/route.sh                # which inbox messages are addressed to me
 ├── scripts/preflight.sh            # vet a project's vendored bin from trusted code
