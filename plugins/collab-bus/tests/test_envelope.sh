@@ -96,7 +96,11 @@ check_rejects 'outcome: maybe'
 check_rejects 'intent: whenever'
 check_rejects 'reply_to: not-a-ulid'
 check_rejects 'pair: nonsense'
+check_rejects 'pair: tb'
 check_rejects 'unknown_key: x'
+APP="$(mk apppair.md '---' 'id: 01M0WG3WJF6AX39B2RGCPVN2CM' 'from: claude' 'to: codex' \
+  'type: task' "subject: 'x'" 'status: open' 'pair: tbf0bf8b11d677d108f7b0bf5809fd5f18' '---')"
+bash "$CHECK" --quiet "$APP" || { echo "        refused a Herdr App pair" >&2; r8=1; }
 [ "$r8" = 0 ] && ok "bad outcome/intent/ULID/pair and unknown keys are all rejected" \
               || bad "a malformed machine token was accepted"
 

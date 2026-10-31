@@ -79,7 +79,7 @@ rm -rf "$t"
 # --- 6. input validation still rejects bad path components -------------------
 t="$(newroot)"
 rc_all=0
-for args in ".. slug w1:t1" "codex .. w1:t1" "codex slug not-a-tab" "codex/esc slug w1:t1"; do
+for args in ".. slug w1:t1" "codex .. w1:t1" "codex slug not-a-tab" "codex slug tb" "codex slug tb:x" "codex slug w1:tb1" "codex/esc slug w1:t1"; do
   # shellcheck disable=SC2086
   ( cd "$t" && bash "$SCRIPT" $args >/dev/null 2>&1 ) && rc_all=1
 done

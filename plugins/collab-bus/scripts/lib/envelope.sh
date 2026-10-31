@@ -307,7 +307,8 @@ _envelope_scan() {
                 else
                   [[ "$raw" =~ ^(open|done|closed)$ ]] || { _env_err "$f: status must be open|done|closed"; bad=1; }
                 fi ;;
-      pair)     [[ "$raw" =~ ^w[0-9]+:t[0-9]+$ ]] || { _env_err "$f: pair must look like w3:t6"; bad=1; } ;;
+      pair)     [[ "$raw" =~ ^(w[0-9]+:t[0-9]+|tb[0-9A-Za-z]+)$ ]] \
+                  || { _env_err "$f: pair must look like w3:t6 (herdr) or tb<id> (Herdr App)"; bad=1; } ;;
       type)     [[ "$raw" =~ ^[a-z][a-z-]*$ ]] || { _env_err "$f: type: bad value '$raw'"; bad=1; } ;;
     esac
   done <<EOF

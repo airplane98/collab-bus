@@ -331,5 +331,16 @@ out="$( cd "$t" && collab/bin/publish.sh "$d" 2>&1 )"; rc=$?
   || bad "valid schema-2 message refused (rc=$rc out=$out)"
 rm -rf "$t"
 
+# --- Herdr App tab: allocate with a tb<id> tab, publish with a matching pair ---------
+t="$(newroot)"
+draft="$(cd "$t" && bash "$NEXTID" codex apptab tbf0bf8b11d677d108f7b0bf5809fd5f18)"; rc0=$?
+id="$(basename "$draft")"; id="${id#.}"; id="${id%%-*}"
+printf -- '---\nid: %s\nfrom: claude\nto: codex\npair: tbf0bf8b11d677d108f7b0bf5809fd5f18\ntype: task\nsubject: %s\nstatus: open\n---\n\nbody\n' "$id" "'x'" > "$draft"
+final="$(cd "$t" && bash "$PUBLISH" "$draft" 2>&1)"; rc=$?
+[ "$rc0" = 0 ] && [ "$rc" = 0 ] && [[ "$(basename "$final")" == "$id-tbf0bf8b11d677d108f7b0bf5809fd5f18-apptab.md" ]] && [ -f "$final" ] \
+  && ok "a Herdr App tab (tb<id>) allocates, publishes, and its pair matches the filename" \
+  || bad "Herdr App tab refused (rc0=$rc0 rc=$rc out=$final)"
+rm -rf "$t"
+
 [ "$fails" -eq 0 ] && { echo "publish: all passed"; exit 0; }
 echo "publish: $fails failed" >&2; exit 1

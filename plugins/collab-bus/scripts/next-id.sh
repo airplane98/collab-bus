@@ -84,7 +84,7 @@ fi
 COLLAB_ROOT="${COLLAB_ROOT:-collab}"
 TO="${1:?usage: next-id.sh <to> <slug> <tab>}"
 SLUG="${2:?usage: next-id.sh <to> <slug> <tab>}"
-TAB="${3:?usage: next-id.sh <to> <slug> <tab>  (tab is required, e.g. w3:t3)}"
+TAB="${3:?usage: next-id.sh <to> <slug> <tab>  (tab is required, e.g. w3:t3 or tb<id>)}"
 
 # --- validate inputs: these become path components ---------------------------
 # Allowlist, not a blocklist. The first character must be alphanumeric so TO=".."
@@ -95,8 +95,9 @@ fi
 if ! [[ "$SLUG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   echo "error: slug '$SLUG' must start with a letter or digit and match [A-Za-z0-9._-]*" >&2; exit 2
 fi
-if ! [[ "$TAB" =~ ^w[0-9]+:t[0-9]+$ ]]; then
-  echo "error: tab '$TAB' must match ^w[0-9]+:t[0-9]+\$ (e.g. w3:t3)" >&2; exit 2
+# Two tab shapes: herdr TUI `w3:t3`, Herdr App `tb<id>` (the `herdr.tab` label hc reports).
+if ! [[ "$TAB" =~ ^(w[0-9]+:t[0-9]+|tb[0-9A-Za-z]+)$ ]]; then
+  echo "error: tab '$TAB' must look like w3:t3 (herdr) or tb<id> (Herdr App)" >&2; exit 2
 fi
 [ -d "$COLLAB_ROOT/inbox" ] || { echo "error: $COLLAB_ROOT/inbox not found — run /collab-bus:init first" >&2; exit 1; }
 COLLAB_ROOT="$(cd "$COLLAB_ROOT" && pwd -P)"

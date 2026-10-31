@@ -139,7 +139,7 @@ fresh template would silently discard.
    type: review-request
    subject: 'single-quoted; interior '' doubled; never a newline'
    status: open                 # legacy, still written
-   pair: w3:t6                  # legacy, still written
+   pair: w3:t6                  # legacy, still written (Herdr App tab: tb<id>)
    ---
    ```
 

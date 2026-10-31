@@ -57,9 +57,9 @@ final="${final%.part}"   # strip trailing .part  -> <ULID>-<tab>-<slug>.md
 
 # Validate the derived name is a real allocator output, not just any
 # `.something.md.part`: a 26-char Crockford ULID (first char 0-7, the 48-bit
-# timestamp bound), a w<n>t<n> tab, and a slug from next-id.sh's own allowlist.
+# timestamp bound), a w<n>t<n> or tb<id> tab, and a slug from next-id.sh's own allowlist.
 ULID='[0-7][0-9A-HJKMNP-TV-Z]{25}'
-if ! [[ "$final" =~ ^${ULID}-w[0-9]+t[0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*\.md$ ]]; then
+if ! [[ "$final" =~ ^${ULID}-(w[0-9]+t[0-9]+|tb[0-9A-Za-z]+)-[A-Za-z0-9][A-Za-z0-9._-]*\.md$ ]]; then
   echo "error: '$base' is not a canonical collab draft name (bad ULID/tab/slug)" >&2; exit 2
 fi
 
